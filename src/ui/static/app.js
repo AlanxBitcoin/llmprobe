@@ -1,6 +1,8 @@
 let actions = [];
 let selectedAction = null;
 let lastResult = null;
+let heatmapThreshold = 2.0;
+let busyCountdownTimer = null;
 
 const actionsList = document.getElementById("actionsList");
 const paramsForm = document.getElementById("paramsForm");
@@ -11,6 +13,7 @@ const commandPreview = document.getElementById("commandPreview");
 const serverStatus = document.getElementById("serverStatus");
 const resultSummary = document.getElementById("resultSummary");
 const csvContainer = document.getElementById("csvContainer");
+const hiddenStateContainer = document.getElementById("hiddenStateContainer");
 const artifactList = document.getElementById("artifactList");
 const showCsvButton = document.getElementById("showCsvButton");
 const histogramButton = document.getElementById("histogramButton");
@@ -108,10 +111,12 @@ function updateCommandPreview() {
 async function runSelectedAction() {
   if (!selectedAction) return;
   const params = collectParams();
+  const studyWindow = window.open("", "_blank");
   setStatus("Running");
   runButton.disabled = true;
   resultSummary.textContent = "Running study. Large model calls can take a while.";
   csvContainer.innerHTML = "";
+  hiddenStateContainer.innerHTML = "";
   artifactList.innerHTML = "";
   try {
     const response = await fetch("/api/execute", {
@@ -121,22 +126,271 @@ async function runSelectedAction() {
     });
     lastResult = await response.json();
     renderResult(lastResult);
+    renderResultInWindow(studyWindow, lastResult);
   } catch (error) {
     lastResult = null;
     resultSummary.innerHTML = `<span class="error">${escapeHtml(error.message)}</span>`;
+    if (studyWindow && !studyWindow.closed) {
+      studyWindow.document.body.innerHTML = `<pre style="padding:12px;color:#a83d3d;">${escapeHtml(error.message)}</pre>`;
+    }
   } finally {
     runButton.disabled = false;
     setStatus("Ready");
   }
 }
 
-function renderResult(result) {
+function renderResultInWindow(studyWindow, result) {
+  if (!studyWindow || studyWindow.closed) return;
+  const doc = studyWindow.document;
+  doc.open();
+  doc.write(`<!doctype html><html><head><meta charset="utf-8"/><title>Study Result</title>
+  <style>
+  body{font-family:Segoe UI,Arial,sans-serif;margin:12px;color:#17202a}
+  .muted{color:#617080}.ok{color:#2d7d4f}.error{color:#a83d3d}
+  .box{border:1px solid #d7dde4;border-radius:6px;padding:10px;margin:10px 0}
+  .scroll{overflow:auto;max-height:520px;border:1px solid #d7dde4;border-radius:6px}
+  table{width:100%;border-collapse:collapse;font-size:13px}
+  th,td{padding:6px 8px;border-bottom:1px solid #d7dde4;text-align:left}
+  th{position:sticky;top:0;background:#edf2f4}
+  canvas{display:block}
+  a{display:block;margin:4px 0}
+  </style></head><body>
+  <h2>Study Result</h2>
+  <div id="summary" class="box"></div>
+  <div id="hidden" class="box"></div>
+  <div id="csv" class="box"></div>
+  <div id="artifacts" class="box"></div>
+  </body></html>`);
+  doc.close();
+
+  const summary = doc.getElementById("summary");
+  const hidden = doc.getElementById("hidden");
+  const csv = doc.getElementById("csv");
+  const artifacts = doc.getElementById("artifacts");
+  if (!summary || !hidden || !csv || !artifacts) return;
+
   const ok = result.status === "ok";
-  resultSummary.innerHTML = `
-    <div class="${ok ? "ok" : "error"}">Status: ${escapeHtml(result.status || "unknown")}</div>
+  const busy = result.status === "busy";
+  summary.innerHTML = `
+    <div class="${ok ? "ok" : busy ? "muted" : "error"}">Status: ${escapeHtml(result.status || "unknown")}</div>
     <div>Return code: ${escapeHtml(String(result.return_code ?? ""))}</div>
     <div>Artifacts: ${result.artifacts ? result.artifacts.length : 0}</div>
   `;
+  if (result.stderr) {
+    const pre = doc.createElement("pre");
+    pre.textContent = result.stderr;
+    summary.appendChild(pre);
+  }
+
+  renderHeatmapIntoDoc(doc, hidden, result.hidden_state_heatmap);
+  renderCsvIntoDoc(doc, csv, result.csv_preview);
+  renderArtifactsIntoDoc(doc, artifacts, result.artifacts || []);
+}
+
+function renderCsvIntoDoc(doc, container, csvPreview) {
+  container.innerHTML = "<h3>CSV Preview</h3>";
+  if (!csvPreview || !csvPreview.headers || csvPreview.headers.length === 0) {
+    container.append("No CSV preview available yet.");
+    return;
+  }
+  const wrap = doc.createElement("div");
+  wrap.className = "scroll";
+  const table = doc.createElement("table");
+  const thead = doc.createElement("thead");
+  const hr = doc.createElement("tr");
+  csvPreview.headers.forEach((h) => { const th = doc.createElement("th"); th.textContent = h; hr.appendChild(th); });
+  thead.appendChild(hr);
+  table.appendChild(thead);
+  const tbody = doc.createElement("tbody");
+  csvPreview.rows.forEach((row) => {
+    const tr = doc.createElement("tr");
+    csvPreview.headers.forEach((h) => { const td = doc.createElement("td"); td.textContent = row[h] ?? ""; tr.appendChild(td); });
+    tbody.appendChild(tr);
+  });
+  table.appendChild(tbody);
+  wrap.appendChild(table);
+  container.appendChild(wrap);
+}
+
+function renderArtifactsIntoDoc(doc, container, artifacts) {
+  container.innerHTML = "<h3>Artifacts</h3>";
+  artifacts.forEach((artifact) => {
+    const link = doc.createElement("a");
+    link.href = artifact.url;
+    link.target = "_blank";
+    link.rel = "noreferrer";
+    link.textContent = `${artifact.type.toUpperCase()} ${artifact.relative_path}`;
+    container.appendChild(link);
+  });
+}
+
+function renderHeatmapIntoDoc(doc, container, heatmap) {
+  container.innerHTML = "<h3>Hidden State</h3>";
+  if (!heatmap || heatmap.ok === false || !Array.isArray(heatmap.matrix) || heatmap.matrix.length === 0) {
+    const msg = doc.createElement("div");
+    msg.className = "error";
+    msg.textContent = "No heatmap result.";
+    container.appendChild(msg);
+    renderTopLogitsTableIntoDoc(doc, container, heatmap && heatmap.top_logits ? heatmap.top_logits : [], heatmap);
+    return;
+  }
+  const rows = Number(heatmap.rows || heatmap.matrix.length);
+  const cols = Number(heatmap.cols || (heatmap.matrix[0] ? heatmap.matrix[0].length : 0));
+  const cell = 10;
+  const info = doc.createElement("div");
+  info.className = "muted";
+  info.textContent = `word=${heatmap.word || ""}, source=${heatmap.cache_source || "unknown"}, logits=${heatmap.logits_source || "unknown"}`;
+  container.appendChild(info);
+  const hoverMeta = doc.createElement("div");
+  hoverMeta.className = "muted";
+  hoverMeta.textContent = "Hover: X=-, Y=-";
+  container.appendChild(hoverMeta);
+  const controls = doc.createElement("div");
+  controls.className = "muted";
+  const thresholdLabel = doc.createElement("span");
+  thresholdLabel.textContent = "Threshold ";
+  const thresholdSlider = doc.createElement("input");
+  thresholdSlider.type = "range";
+  thresholdSlider.min = "0.01";
+  thresholdSlider.max = "10";
+  thresholdSlider.step = "0.01";
+  thresholdSlider.value = String(heatmapThreshold);
+  const thresholdValue = doc.createElement("span");
+  thresholdValue.textContent = Number(heatmapThreshold).toFixed(2);
+  controls.appendChild(thresholdLabel);
+  controls.appendChild(thresholdSlider);
+  controls.appendChild(thresholdValue);
+  container.appendChild(controls);
+  const wrap = doc.createElement("div");
+  wrap.className = "scroll";
+  const canvas = doc.createElement("canvas");
+  canvas.width = cols * cell;
+  canvas.height = rows * cell;
+  wrap.appendChild(canvas);
+  container.appendChild(wrap);
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return;
+
+  function drawWithThreshold(threshold) {
+    const safeThreshold = Math.max(0.000001, Number(threshold) || 1);
+    for (let r = 0; r < rows; r += 1) {
+      const row = heatmap.matrix[r] || [];
+      for (let c = 0; c < cols; c += 1) {
+        const v = Number(row[c] || 0);
+        const intensity = Math.min(1, Math.abs(v) / safeThreshold);
+        const red = v > 0 ? Math.round(255 * intensity) : 0;
+        const blue = v < 0 ? Math.round(255 * intensity) : 0;
+        ctx.fillStyle = `rgb(${red},0,${blue})`;
+        ctx.fillRect(c * cell, r * cell, cell, cell);
+      }
+    }
+  }
+
+  thresholdSlider.addEventListener("input", () => {
+    heatmapThreshold = Number(thresholdSlider.value);
+    thresholdValue.textContent = heatmapThreshold.toFixed(2);
+    drawWithThreshold(heatmapThreshold);
+  });
+
+  canvas.addEventListener("mousemove", (event) => {
+    const rect = canvas.getBoundingClientRect();
+    const x = Math.floor((event.clientX - rect.left) / cell);
+    const y = Math.floor((event.clientY - rect.top) / cell);
+    if (x < 0 || x >= cols || y < 0 || y >= rows) {
+      hoverMeta.textContent = "Hover: X=-, Y=-";
+      return;
+    }
+    const row = heatmap.matrix[y] || [];
+    const value = Number(row[x] || 0);
+    hoverMeta.textContent = `Hover: X=${x} (neuron), Y=${y} (layer), value=${value.toFixed(6)}`;
+  });
+  canvas.addEventListener("mouseleave", () => {
+    hoverMeta.textContent = "Hover: X=-, Y=-";
+  });
+
+  drawWithThreshold(heatmapThreshold);
+
+  renderTopLogitsTableIntoDoc(doc, container, heatmap.top_logits || [], heatmap);
+}
+
+function renderTopLogitsTableIntoDoc(doc, container, rows, heatmap) {
+  const title = doc.createElement("h3");
+  title.textContent = "Top 15 Logits (with cosine similarity)";
+  container.appendChild(title);
+  const info = doc.createElement("div");
+  info.className = "muted";
+  const source = heatmap && heatmap.logits_source ? heatmap.logits_source : "unknown";
+  const err = heatmap && heatmap.logits_error ? `, error=${heatmap.logits_error}` : "";
+  info.textContent = `logits_source=${source}${err}`;
+  container.appendChild(info);
+  if (!Array.isArray(rows) || rows.length === 0) {
+    const empty = doc.createElement("div");
+    empty.className = "muted";
+    empty.textContent = "No logits rows returned.";
+    container.appendChild(empty);
+    return;
+  }
+
+  const wrap = doc.createElement("div");
+  wrap.className = "scroll";
+  const table = doc.createElement("table");
+  const thead = doc.createElement("thead");
+  const headerRow = doc.createElement("tr");
+  ["rank", "token_id", "token", "text", "logit", "cosine_similarity"].forEach((header) => {
+    const th = doc.createElement("th");
+    th.textContent = header;
+    headerRow.appendChild(th);
+  });
+  thead.appendChild(headerRow);
+  table.appendChild(thead);
+
+  const tbody = doc.createElement("tbody");
+  rows.forEach((row) => {
+    const tr = doc.createElement("tr");
+    ["rank", "token_id", "token", "text", "logit", "cosine_similarity"].forEach((key) => {
+      const td = doc.createElement("td");
+      const value = row[key];
+      if (typeof value === "number" && (key === "logit" || key === "cosine_similarity")) {
+        td.textContent = value.toFixed(6);
+      } else {
+        td.textContent = value ?? "";
+      }
+      tr.appendChild(td);
+    });
+    tbody.appendChild(tr);
+  });
+  table.appendChild(tbody);
+  wrap.appendChild(table);
+  container.appendChild(wrap);
+}
+
+function renderResult(result) {
+  if (busyCountdownTimer) {
+    clearInterval(busyCountdownTimer);
+    busyCountdownTimer = null;
+  }
+  const ok = result.status === "ok";
+  const busy = result.status === "busy";
+  resultSummary.innerHTML = `
+    <div class="${ok ? "ok" : busy ? "muted" : "error"}">Status: ${escapeHtml(result.status || "unknown")}</div>
+    <div>Return code: ${escapeHtml(String(result.return_code ?? ""))}</div>
+    <div>Artifacts: ${result.artifacts ? result.artifacts.length : 0}</div>
+  `;
+  if (busy) {
+    const note = document.createElement("div");
+    const running = Number(result.running_for_seconds || 0);
+    let remaining = Number(result.estimated_remaining_seconds || 0);
+    note.textContent = `Task busy: running=${running.toFixed(1)}s, remaining≈${remaining.toFixed(1)}s`;
+    resultSummary.appendChild(note);
+    busyCountdownTimer = setInterval(() => {
+      remaining = Math.max(0, remaining - 1);
+      note.textContent = `Task busy: running=${running.toFixed(1)}s, remaining≈${remaining.toFixed(1)}s`;
+      if (remaining <= 0) {
+        clearInterval(busyCountdownTimer);
+        busyCountdownTimer = null;
+      }
+    }, 1000);
+  }
   if (result.stderr) {
     const pre = document.createElement("pre");
     pre.className = "command-preview";
@@ -144,11 +398,187 @@ function renderResult(result) {
     resultSummary.appendChild(pre);
   }
   renderCsv(result.csv_preview);
+  renderHiddenStateHeatmap(result.hidden_state_heatmap);
   renderArtifacts(result.artifacts || []);
   const hasCsv = !!(result.csv_preview && result.csv_preview.rows && result.csv_preview.rows.length);
   showCsvButton.disabled = !hasCsv;
   histogramButton.disabled = !hasCsv;
   colorMapButton.disabled = !hasCsv;
+}
+
+function renderHiddenStateHeatmap(heatmap) {
+  hiddenStateContainer.innerHTML = "";
+  if (heatmap && heatmap.ok === false) {
+    const msg = document.createElement("div");
+    msg.className = "error";
+    msg.textContent = `Hidden-state heatmap requires a single-token word. token_count=${Number(heatmap.token_count || 0)}`;
+    hiddenStateContainer.appendChild(msg);
+    renderTopLogitsTable(heatmap.top_logits || [], heatmap);
+    return;
+  }
+  if (!heatmap || !Array.isArray(heatmap.matrix) || heatmap.matrix.length === 0) {
+    return;
+  }
+  const rows = Number(heatmap.rows || heatmap.matrix.length);
+  const cols = Number(heatmap.cols || (heatmap.matrix[0] ? heatmap.matrix[0].length : 0));
+  if (!rows || !cols) return;
+
+  const cell = 10;
+  const canvas = document.createElement("canvas");
+  canvas.className = "heatmap-canvas";
+  canvas.width = cols * cell;
+  canvas.height = rows * cell;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return;
+
+  let maxAbs = 0;
+  for (let r = 0; r < rows; r += 1) {
+    const row = heatmap.matrix[r] || [];
+    for (let c = 0; c < cols; c += 1) {
+      const v = Number(row[c] || 0);
+      const a = Math.abs(v);
+      if (a > maxAbs) maxAbs = a;
+    }
+  }
+  if (!Number.isFinite(maxAbs) || maxAbs <= 0) maxAbs = 1;
+
+  function drawWithThreshold(threshold) {
+    const safeThreshold = Math.max(0.000001, Number(threshold) || 1);
+    for (let r = 0; r < rows; r += 1) {
+      const row = heatmap.matrix[r] || [];
+      for (let c = 0; c < cols; c += 1) {
+        const v = Number(row[c] || 0);
+        const intensity = Math.min(1, Math.abs(v) / safeThreshold);
+        let red = 0;
+        let blue = 0;
+        if (v > 0) red = Math.round(255 * intensity);
+        else if (v < 0) blue = Math.round(255 * intensity);
+        ctx.fillStyle = `rgb(${red},0,${blue})`;
+        ctx.fillRect(c * cell, r * cell, cell, cell);
+      }
+    }
+  }
+
+  const meta = document.createElement("p");
+  meta.className = "heatmap-meta";
+  meta.textContent = `Heatmap: ${rows} x ${cols}, cell=${cell}x${cell}, word=${heatmap.word || ""}, source=${heatmap.cache_source || "unknown"}, logits=${heatmap.logits_source || "unknown"}, zero=black, positive=red, negative=blue`;
+  hiddenStateContainer.appendChild(meta);
+  if (heatmap.logits_source === "cache_miss_no_compute") {
+    const tip = document.createElement("div");
+    tip.className = "muted";
+    tip.textContent = "Logits cache miss: skipped compute to keep this request GPU-free.";
+    hiddenStateContainer.appendChild(tip);
+  }
+  if (heatmap.logits_error) {
+    const logitsErr = document.createElement("div");
+    logitsErr.className = "error";
+    logitsErr.textContent = `Logits skipped: ${heatmap.logits_error}`;
+    hiddenStateContainer.appendChild(logitsErr);
+  }
+
+  const hoverMeta = document.createElement("p");
+  hoverMeta.className = "heatmap-meta";
+  hoverMeta.textContent = "Hover: X=-, Y=-";
+  hiddenStateContainer.appendChild(hoverMeta);
+
+  const controls = document.createElement("div");
+  controls.className = "heatmap-controls";
+  const thresholdLabel = document.createElement("span");
+  thresholdLabel.textContent = "Threshold";
+  const thresholdSlider = document.createElement("input");
+  thresholdSlider.type = "range";
+  thresholdSlider.min = "0.01";
+  thresholdSlider.max = "10";
+  thresholdSlider.step = "0.01";
+  thresholdSlider.value = String(heatmapThreshold);
+  const thresholdValue = document.createElement("span");
+  thresholdValue.textContent = heatmapThreshold.toFixed(2);
+  thresholdSlider.addEventListener("input", () => {
+    heatmapThreshold = Number(thresholdSlider.value);
+    thresholdValue.textContent = heatmapThreshold.toFixed(2);
+    drawWithThreshold(heatmapThreshold);
+  });
+  controls.appendChild(thresholdLabel);
+  controls.appendChild(thresholdSlider);
+  controls.appendChild(thresholdValue);
+  hiddenStateContainer.appendChild(controls);
+
+  const wrap = document.createElement("div");
+  wrap.className = "heatmap-scroll";
+  wrap.appendChild(canvas);
+  hiddenStateContainer.appendChild(wrap);
+
+  canvas.addEventListener("mousemove", (event) => {
+    const rect = canvas.getBoundingClientRect();
+    const x = Math.floor((event.clientX - rect.left) / cell);
+    const y = Math.floor((event.clientY - rect.top) / cell);
+    if (x < 0 || x >= cols || y < 0 || y >= rows) {
+      hoverMeta.textContent = "Hover: X=-, Y=-";
+      return;
+    }
+    const row = heatmap.matrix[y] || [];
+    const value = Number(row[x] || 0);
+    hoverMeta.textContent = `Hover: X=${x} (neuron), Y=${y} (layer), value=${value.toFixed(6)}`;
+  });
+  canvas.addEventListener("mouseleave", () => {
+    hoverMeta.textContent = "Hover: X=-, Y=-";
+  });
+
+  drawWithThreshold(heatmapThreshold);
+  renderTopLogitsTable(heatmap.top_logits || [], heatmap);
+}
+
+function renderTopLogitsTable(rows, heatmap) {
+  const title = document.createElement("p");
+  title.className = "heatmap-meta";
+  title.textContent = "Top 15 Logits (with cosine similarity)";
+  hiddenStateContainer.appendChild(title);
+  const info = document.createElement("p");
+  info.className = "heatmap-meta";
+  const source = heatmap && heatmap.logits_source ? heatmap.logits_source : "unknown";
+  const err = heatmap && heatmap.logits_error ? `, error=${heatmap.logits_error}` : "";
+  info.textContent = `logits_source=${source}${err}`;
+  hiddenStateContainer.appendChild(info);
+  if (!Array.isArray(rows) || rows.length === 0) {
+    const empty = document.createElement("p");
+    empty.className = "heatmap-meta";
+    empty.textContent = "No logits rows returned.";
+    hiddenStateContainer.appendChild(empty);
+    return;
+  }
+
+  const table = document.createElement("table");
+  const thead = document.createElement("thead");
+  const headerRow = document.createElement("tr");
+  ["rank", "token_id", "token", "text", "logit", "cosine_similarity"].forEach((header) => {
+    const th = document.createElement("th");
+    th.textContent = header;
+    headerRow.appendChild(th);
+  });
+  thead.appendChild(headerRow);
+  table.appendChild(thead);
+
+  const tbody = document.createElement("tbody");
+  rows.forEach((row) => {
+    const tr = document.createElement("tr");
+    ["rank", "token_id", "token", "text", "logit", "cosine_similarity"].forEach((key) => {
+      const td = document.createElement("td");
+      const value = row[key];
+      if (typeof value === "number" && (key === "logit" || key === "cosine_similarity")) {
+        td.textContent = value.toFixed(6);
+      } else {
+        td.textContent = value ?? "";
+      }
+      tr.appendChild(td);
+    });
+    tbody.appendChild(tr);
+  });
+  table.appendChild(tbody);
+
+  const wrap = document.createElement("div");
+  wrap.className = "csv-container";
+  wrap.appendChild(table);
+  hiddenStateContainer.appendChild(wrap);
 }
 
 function renderCsv(csvPreview) {

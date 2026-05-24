@@ -74,7 +74,12 @@ def _run_fastapi_server(project_root: Path, config_path: Path, *, host: str, por
             config_path=config_path,
             timeout_seconds=int(payload.get("timeout_seconds") or 0),
         )
-        status = 200 if result.get("status") == "ok" else 500
+        if result.get("status") == "ok":
+            status = 200
+        elif result.get("status") == "busy":
+            status = 409
+        else:
+            status = 500
         return JSONResponse(result, status_code=status)
 
     @app.get("/static/{rel_path:path}")
@@ -156,7 +161,12 @@ def _make_handler(project_root: Path, config_path: Path) -> type[BaseHTTPRequest
                     config_path=config_path,
                     timeout_seconds=int(payload.get("timeout_seconds") or 0),
                 )
-                self._send_json(result, status=200 if result.get("status") == "ok" else 500)
+                if result.get("status") == "ok":
+                    self._send_json(result, status=200)
+                elif result.get("status") == "busy":
+                    self._send_json(result, status=409)
+                else:
+                    self._send_json(result, status=500)
             except Exception as exc:  # noqa: BLE001 - this is a local debugging UI.
                 self._send_json({"status": "error", "error": str(exc)}, status=500)
 

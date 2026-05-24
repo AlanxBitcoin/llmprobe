@@ -228,6 +228,42 @@ button:disabled {
   border-radius: 6px;
 }
 
+.hidden-state-container {
+  margin-top: 12px;
+}
+
+.heatmap-controls {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 6px 0 10px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.heatmap-controls input[type="range"] {
+  width: 220px;
+}
+
+.heatmap-meta {
+  margin: 0 0 8px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.heatmap-scroll {
+  max-width: 100%;
+  max-height: 460px;
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: #0a0a0a;
+}
+
+.heatmap-canvas {
+  display: block;
+}
+
 table {
   width: 100%;
   border-collapse: collapse;

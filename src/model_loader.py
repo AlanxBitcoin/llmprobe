@@ -10,6 +10,7 @@ from pathlib import Path
 import importlib.util
 import site
 import sys
+import threading
 from typing import Any
 
 
@@ -80,6 +81,7 @@ class LocalModelBundle:
 
 
 _CACHED_BUNDLE: LocalModelBundle | None = None
+_BUNDLE_LOCK = threading.RLock()
 
 
 def _build_compat_signature(config: dict[str, Any]) -> tuple[Any, ...]:
@@ -167,8 +169,9 @@ def is_model_compatible(current: LocalModelBundle | None, config: dict[str, Any]
 
 def release_model_bundle() -> None:
     global _CACHED_BUNDLE
-    bundle = _CACHED_BUNDLE
-    _CACHED_BUNDLE = None
+    with _BUNDLE_LOCK:
+        bundle = _CACHED_BUNDLE
+        _CACHED_BUNDLE = None
     if bundle is None:
         return
     try:
@@ -182,9 +185,10 @@ def release_model_bundle() -> None:
 
 def get_model_bundle(config: dict[str, Any], force_reload: bool = False) -> LocalModelBundle:
     global _CACHED_BUNDLE
-    if not force_reload and is_model_compatible(_CACHED_BUNDLE, config):
-        return _CACHED_BUNDLE  # type: ignore[return-value]
-    if _CACHED_BUNDLE is not None:
-        release_model_bundle()
-    _CACHED_BUNDLE = load_local_model(config)
-    return _CACHED_BUNDLE
+    with _BUNDLE_LOCK:
+        if not force_reload and is_model_compatible(_CACHED_BUNDLE, config):
+            return _CACHED_BUNDLE  # type: ignore[return-value]
+        if _CACHED_BUNDLE is not None:
+            release_model_bundle()
+        _CACHED_BUNDLE = load_local_model(config)
+        return _CACHED_BUNDLE

@@ -11,6 +11,9 @@ FORM_SCHEMAS: dict[str, list[dict[str, Any]]] = {
     "single_word_form": [
         {"name": "word", "label": "Word", "type": "text", "default": "apple", "required": True},
     ],
+    "single_word_hidden_state_form": [
+        {"name": "word", "label": "Word", "type": "text", "default": "apple", "required": True},
+    ],
     "color_words_form": [
         {"name": "word_file", "label": "Word file", "type": "text", "default": "data/color_words.txt"},
         {"name": "run_name", "label": "Run name", "type": "text", "default": "color_words"},

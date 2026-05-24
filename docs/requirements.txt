@@ -5,9 +5,12 @@ bitsandbytes
 scikit-learn
 sentencepiece
 pyyaml
+pandas
 numpy
 matplotlib
 seaborn
 networkx
 imageio
 imageio-ffmpeg
+fastapi
+uvicorn

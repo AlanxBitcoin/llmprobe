@@ -32,9 +32,8 @@ This module contains utilities for:
 
 import torch
 from torch import nn
-from typing import Dict, List, Optional, Tuple, Union, Callable
+from typing import Any, Dict, List, Optional, Tuple, Union, Callable
 from collections import defaultdict
-
 
 class HiddenStateHook:
     """Manager for extracting hidden states from model layers."""

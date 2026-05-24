@@ -9,6 +9,11 @@
 
 ---
 
+## v1.32 (2026-05-24)
+- 依赖清单对齐技术栈说明：
+  - `docs/requirements.txt` 增加 `fastapi`、`uvicorn`（对应 UI 的 FastAPI/ASGI 启动路径）。
+  - 补充 `pandas` 以匹配文档中的数据处理技术栈描述。
+
 ## v1.31 (2026-05-24)
 - UI 服务层对齐技术栈说明（FastAPI/ASGI）：
   - `src/ui/server.py` 更新为“优先 FastAPI + uvicorn 启动”；

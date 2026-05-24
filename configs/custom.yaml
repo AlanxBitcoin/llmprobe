@@ -2,8 +2,8 @@ model:
   model_name_or_path: "C:/AI_Model/Llama3_8B_Instruct"
   tokenizer_name_or_path: null
   device_map: "auto"
-  torch_dtype: "bfloat16"
-  load_in_4bit: false
+  torch_dtype: "float16"
+  load_in_4bit: true
   load_in_8bit: false
   trust_remote_code: true
 
@@ -38,7 +38,7 @@ visualization:
 
 runtime:
   api_mode: true
-  start_llama_api_on_boot: true
+  start_llama_api_on_boot: true      # true=启动 main 时默认预加载模型; false=启动服务但不预加载
   keep_model_loaded: true
   reload_policy: "auto"
   require_clean_model: false
@@ -49,7 +49,7 @@ ui:
   host: "127.0.0.1"
   port: 8000
   open_browser: false
-  default_view: "study_linear_probe"
+  default_view: "study_single_word_hidden_state"
   max_csv_preview_rows: 200
   allow_chart_generation: true
 
@@ -82,3 +82,8 @@ report:
   top_negative_words: 8               # 维度报告中负向前 N 个词
   largest_lists_limit: 12             # 全局分析中显示的最大列表数
   review_candidates_limit: 12         # 审查候选的限制数量
+
+hidden_store:
+  protocol: "bos1_assistant0"         # default: bos=true, assistant=false
+  init_on_main_boot: true             # true=main启动先把store对象绑定到硬盘data/done文件
+  preload_on_boot: true               # true=main启动后预加载hidden_store对象（memmap句柄）

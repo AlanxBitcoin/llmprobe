@@ -9,6 +9,8 @@ from __future__ import annotations
 import argparse
 import os
 import sys
+import threading
+import time
 from pathlib import Path
 from typing import Any
 import torch
@@ -46,7 +48,8 @@ from src.probes.attribute_probe import (
     predict_word_attributes,
 )
 from src.runtime_api import start_llama_api
-from src.study import run_attribute_probe_study, run_linear_probe_study
+from src.study import run_attribute_probe_study, run_linear_probe_study, run_single_word_hidden_state_study
+from src.utils.extract_hidden import preload_hidden_store, preload_hidden_store_from_disk
 from src.utils.token_hidden_store import build_store_for_protocol
 from src.utils.utils import write_json
 
@@ -63,6 +66,12 @@ def _parse_bool_flag(value: str) -> bool:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="LLM hidden-state probe MVP")
     parser.add_argument("--config", default="configs/custom.yaml", help="Path to YAML config")
+    parser.add_argument(
+        "--start-llama-api",
+        type=_parse_bool_flag,
+        default=True,
+        help="Whether to start Llama runtime API on app boot (true/false)",
+    )
     subparsers = parser.add_subparsers(dest="command")
 
     subparsers.add_parser("run-single-batch", help="Analyze the configured word file one word at a time")
@@ -98,6 +107,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     single = subparsers.add_parser("run-single-word", help="Analyze one word")
     single.add_argument("word", help="Bare English word")
+
+    hidden_map = subparsers.add_parser(
+        "run-single-word-hidden-state",
+        help="Compute and return full hidden-state matrix (embedding + layers) for one word",
+    )
+    hidden_map.add_argument("word", help="Bare English word")
 
     combo = subparsers.add_parser("run-word-sum", help="Analyze the layer-8 summed representation of two or more words")
     combo.add_argument("words", nargs="+", help="Two or more bare English words")
@@ -140,29 +155,77 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def start_app(config_path: str | Path = "configs/custom.yaml", *, config: dict[str, Any] | None = None) -> None:
+def start_app(
+    config_path: str | Path = "configs/custom.yaml",
+    *,
+    config: dict[str, Any] | None = None,
+    start_llama_runtime: bool | None = None,
+) -> None:
     effective_config = config or load_config(config_path)
     runtime_cfg = (effective_config or {}).get("runtime", {})
     ui_cfg = (effective_config or {}).get("ui", {})
+    hidden_store_cfg = dict((effective_config or {}).get("hidden_store") or {})
 
-    if bool(runtime_cfg.get("start_llama_api_on_boot", True)):
-        start_llama_api(effective_config)
+    if bool(hidden_store_cfg.get("init_on_main_boot", True)):
+        try:
+            preload_hidden_store_from_disk(effective_config)
+        except Exception as exc:  # noqa: BLE001 - startup continues even if preload fails.
+            print(f"[startup] hidden_store disk init skipped: {exc}")
+
+    should_start_llama = bool(runtime_cfg.get("start_llama_api_on_boot", True)) if start_llama_runtime is None else bool(start_llama_runtime)
 
     if bool(ui_cfg.get("enabled", True)) and bool(ui_cfg.get("start_server_on_boot", True)):
         from src.ui import run_ui_server
 
+        if should_start_llama:
+            _start_llama_after_ui_boot(effective_config, preload_hidden=bool(hidden_store_cfg.get("preload_on_boot", True)))
         run_ui_server(effective_config, config_path=config_path)
         return
+
+    if should_start_llama:
+        api = start_llama_api(effective_config)
+        if bool(hidden_store_cfg.get("preload_on_boot", True)):
+            try:
+                preload_hidden_store(api.get_bundle(), effective_config)
+            except Exception as exc:  # noqa: BLE001 - preload failure should not block startup.
+                print(f"[startup] hidden_store preload skipped: {exc}")
     print("No server started because ui.enabled/start_server_on_boot is false.")
 
 
-def _execute_parsed_args(args: argparse.Namespace, config: dict[str, Any]) -> None:
-    if args.command is None:
-        start_app(args.config, config=config)
-        return
+def _start_llama_after_ui_boot(config: dict[str, Any], *, preload_hidden: bool) -> None:
+    def _runner() -> None:
+        time.sleep(1.0)
+        try:
+            print("[startup] background model warmup started...")
+            api = start_llama_api(config)
+            if preload_hidden:
+                try:
+                    preload_hidden_store(api.get_bundle(), config)
+                except Exception as exc:  # noqa: BLE001 - preload failure should not break warmup thread.
+                    print(f"[startup] hidden_store preload skipped: {exc}")
+            print("[startup] background model warmup finished.")
+        except Exception as exc:  # noqa: BLE001
+            print(f"[startup] background model warmup failed: {exc}")
 
-    bundle = get_model_bundle(config)
+    thread = threading.Thread(target=_runner, name="llama-warmup", daemon=True)
+    thread.start()
+
+
+def _execute_parsed_args(args: argparse.Namespace, config: dict[str, Any]) -> dict[str, Any] | None:
+    if args.command is None:
+        start_app(args.config, config=config, start_llama_runtime=bool(args.start_llama_api))
+        return None
+
+    if args.command == "run-single-word-hidden-state":
+        heatmap = run_single_word_hidden_state_study(
+            word=args.word,
+            config=config,
+            config_path=args.config,
+        )
+        return {"hidden_state_heatmap": heatmap}
+
     if args.command == "build-token-hidden-store":
+        bundle = get_model_bundle(config)
         result = build_store_for_protocol(
             bundle,
             config,
@@ -175,8 +238,9 @@ def _execute_parsed_args(args: argparse.Namespace, config: dict[str, Any]) -> No
         for key in ("protocol", "token_count", "processed", "written", "skipped_done", "start_token_id", "end_token_id", "data_file", "progress_file"):
             if key in result:
                 print(f"[hidden_store] {key}={result[key]}")
-        return
+        return {"hidden_store": result}
 
+    bundle = get_model_bundle(config)
     pipeline = ProbePipeline(config, bundle)
 
     if args.command == "run-single-batch":
@@ -249,14 +313,14 @@ def _execute_parsed_args(args: argparse.Namespace, config: dict[str, Any]) -> No
         fitted = fit_full_attribute_probes(feature_bank, rows, config=config)
         result = predict_word_attributes(bundle, fitted, args.word, target_layer, config=config)
         write_json(f"data/outputs/predict_{args.word}.json", result)
+    return None
 
 
-def run_cli_command(config_path: str | Path, command_args: list[str]) -> int:
+def run_cli_command(config_path: str | Path, command_args: list[str]) -> dict[str, Any] | None:
     parser = build_parser()
     args = parser.parse_args(["--config", str(config_path), *command_args])
     config = load_config(args.config)
-    _execute_parsed_args(args, config)
-    return 0
+    return _execute_parsed_args(args, config)
 
 
 def main() -> None:

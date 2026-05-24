@@ -6,6 +6,7 @@ from __future__ import annotations
 # - All upper layers should access model bundle through this runtime boundary.
 
 from dataclasses import dataclass
+import threading
 from typing import Any
 
 from .model_loader import get_model_bundle, release_model_bundle
@@ -37,18 +38,21 @@ class LlamaRuntimeAPI:
 
 
 _RUNTIME_API: LlamaRuntimeAPI | None = None
+_RUNTIME_LOCK = threading.RLock()
 
 
 def start_llama_api(config: dict[str, Any]) -> LlamaRuntimeAPI:
     global _RUNTIME_API
-    _RUNTIME_API = LlamaRuntimeAPI(config)
-    return _RUNTIME_API
+    with _RUNTIME_LOCK:
+        _RUNTIME_API = LlamaRuntimeAPI(config)
+        return _RUNTIME_API
 
 
 def get_runtime_api() -> LlamaRuntimeAPI:
-    if _RUNTIME_API is None:
-        raise RuntimeError("Llama runtime API is not started. Call start_llama_api(config) first.")
-    return _RUNTIME_API
+    with _RUNTIME_LOCK:
+        if _RUNTIME_API is None:
+            raise RuntimeError("Llama runtime API is not started. Call start_llama_api(config) first.")
+        return _RUNTIME_API
 
 
 def execute_model_call(request: RuntimeRequest) -> RuntimeResult:
@@ -58,5 +62,6 @@ def execute_model_call(request: RuntimeRequest) -> RuntimeResult:
 
 def shutdown_llama_api() -> None:
     global _RUNTIME_API
-    _RUNTIME_API = None
+    with _RUNTIME_LOCK:
+        _RUNTIME_API = None
     release_model_bundle()

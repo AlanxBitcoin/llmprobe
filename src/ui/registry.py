@@ -34,6 +34,14 @@ class UIAction:
 
 
 UI_ACTIONS: dict[str, UIAction] = {
+    "study_single_word_hidden_state": UIAction(
+        id="study_single_word_hidden_state",
+        label="Single Word Hidden State",
+        description="Run one forward pass and render the full 37x4096 hidden-state heatmap.",
+        kind="study",
+        command="run-single-word-hidden-state",
+        form_schema="single_word_hidden_state_form",
+    ),
     "study_single_word": UIAction(
         id="study_single_word",
         label="Single Word",
@@ -98,6 +106,8 @@ def get_ui_action(action_id: str) -> UIAction:
 
 def build_command_args(action: UIAction, params: dict[str, Any]) -> list[str]:
     if action.command == "run-single-word":
+        return [action.command, str(params.get("word") or "apple")]
+    if action.command == "run-single-word-hidden-state":
         return [action.command, str(params.get("word") or "apple")]
     if action.command == "run-color-words-experiment":
         return [

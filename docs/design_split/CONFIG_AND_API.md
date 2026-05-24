@@ -75,9 +75,8 @@ output:
   save_csv: true
   generate_video: false
 
-# 全词表隐状态定长缓存（可选）
+# 全词表隐状态定长缓存（统一入口，默认启用）
 hidden_store:
-  enabled: false
   protocol: "bos1_assistant0"        # bos0_assistant0 | bos1_assistant0 | bos1_assistant1
   data_file: "data/cache/hidden_states.{protocol}.f16.bin"
   progress_file: "data/cache/hidden_states.{protocol}.done.bin"
