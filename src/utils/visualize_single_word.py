@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+# Design requirements (moved from PROJECT_DESIGN.md):
+# - Render single-word analysis dashboard images from prepared result payloads.
+# - Visualization module only; no model execution logic here.
+
 import os
 from pathlib import Path
 

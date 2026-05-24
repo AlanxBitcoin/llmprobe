@@ -1,5 +1,12 @@
 from __future__ import annotations
 
+# Design requirements (moved from PROJECT_DESIGN.md):
+# - Hidden-state extraction APIs include three modes:
+#   1) extract_single_word_states (per-word forward)
+#   2) extract_all_words_state (single pass, last token)
+#   3) extract_sequence_positional_states (single pass, per-word positions)
+# - extract_word_hidden_states should support hidden_store read-through when enabled.
+
 from typing import Any
 
 import numpy as np
@@ -92,6 +99,62 @@ def extract_word_hidden_states(bundle, word: str, config: dict[str, Any] | None 
         "word": word,
         "tokens": tokenizer.convert_ids_to_tokens(encoded["input_ids"][0]),
         "layers": per_layer,
+    }
+
+
+def extract_single_word_states(
+    bundle,
+    words: list[str],
+    target_layer: int,
+    config: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
+    """Per-word forward path: one model call per word.
+
+    Returns a row per input word with the selected layer vector and summary stats.
+    """
+    rows: list[dict[str, Any]] = []
+    for word in words:
+        hidden = extract_word_hidden_states(bundle, word, config=config)
+        layer_info = hidden["layers"][target_layer]
+        rows.append(
+            {
+                "word": word,
+                "tokens": hidden["tokens"],
+                "target_layer": int(target_layer),
+                "vector": np.asarray(layer_info["vector"], dtype=np.float32),
+                "abs_mean": float(layer_info["abs_mean"]),
+                "abs_max": float(layer_info["abs_max"]),
+            }
+        )
+    return rows
+
+
+def extract_all_words_state(
+    bundle,
+    words: list[str],
+    target_layer: int,
+) -> dict[str, Any]:
+    """Single forward pass on concatenated words; returns last-token state."""
+    tokenizer = bundle.tokenizer
+    model = bundle.model
+    device = _model_device(model)
+
+    text = " ".join(words)
+    encoded = tokenizer(text, return_tensors="pt")
+    encoded = {key: value.to(device) for key, value in encoded.items()}
+    with torch.no_grad():
+        outputs = model(**encoded, output_hidden_states=True)
+
+    layer_hidden = outputs.hidden_states[target_layer]
+    vector = _last_token_hidden(layer_hidden)
+    return {
+        "words": words,
+        "text": text,
+        "target_layer": int(target_layer),
+        "tokens": tokenizer.convert_ids_to_tokens(encoded["input_ids"][0]),
+        "vector": vector.numpy(),
+        "abs_mean": float(vector.abs().mean().item()),
+        "abs_max": float(vector.abs().max().item()),
     }
 
 

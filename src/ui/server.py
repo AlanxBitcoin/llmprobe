@@ -1,5 +1,10 @@
 from __future__ import annotations
 
+# Design requirements (moved from PROJECT_DESIGN.md):
+# - Host local web UI server and static/template/output routes.
+# - UI layer handles interaction only; no probe training logic here.
+# - All file serving remains under project-root-safe paths.
+
 import json
 import mimetypes
 import os
@@ -27,7 +32,74 @@ def run_ui_server(
     ui_cfg = (config or {}).get("ui", {})
     host = host or ui_cfg.get("host") or DEFAULT_HOST
     port = int(port or ui_cfg.get("port") or DEFAULT_PORT)
-    handler = _make_handler(root.resolve(), Path(config_path))
+    try:
+        _run_fastapi_server(root.resolve(), Path(config_path), host=str(host), port=int(port))
+        return
+    except Exception as exc:  # noqa: BLE001 - fall back to built-in server for local robustness.
+        print(f"[ui] FastAPI server unavailable, fallback to built-in server: {exc}")
+    _run_builtin_server(root.resolve(), Path(config_path), host=str(host), port=int(port))
+
+
+def _run_fastapi_server(project_root: Path, config_path: Path, *, host: str, port: int) -> None:
+    from fastapi import Body, FastAPI
+    from fastapi.responses import FileResponse, JSONResponse
+    import uvicorn
+
+    template_dir = project_root / "src" / "ui" / "templates"
+    static_dir = project_root / "src" / "ui" / "static"
+    outputs_dir = project_root / "data" / "outputs"
+
+    app = FastAPI(title="LLM Probe UI", docs_url=None, redoc_url=None)
+
+    @app.get("/")
+    async def index():
+        path = template_dir / "index.html"
+        if not path.exists():
+            return JSONResponse({"error": "File not found"}, status_code=404)
+        return FileResponse(path, media_type="text/html; charset=utf-8")
+
+    @app.get("/api/actions")
+    async def api_actions():
+        return JSONResponse(actions_payload())
+
+    @app.post("/api/execute")
+    async def api_execute(payload: dict[str, Any] | None = Body(default=None)):
+        payload = payload or {}
+        action_id = str(payload.get("action_id") or "")
+        params = payload.get("params") or {}
+        result = execute_ui_action(
+            action_id=action_id,
+            params=params,
+            project_root=project_root,
+            config_path=config_path,
+            timeout_seconds=int(payload.get("timeout_seconds") or 0),
+        )
+        status = 200 if result.get("status") == "ok" else 500
+        return JSONResponse(result, status_code=status)
+
+    @app.get("/static/{rel_path:path}")
+    async def static_file(rel_path: str):
+        path = _safe_join(static_dir, unquote(rel_path))
+        if not path.exists() or not path.is_file():
+            return JSONResponse({"error": "File not found"}, status_code=404)
+        guessed_type = mimetypes.guess_type(str(path))[0] or "application/octet-stream"
+        return FileResponse(path, media_type=guessed_type)
+
+    @app.get("/outputs/{rel_path:path}")
+    async def output_file(rel_path: str):
+        path = _safe_join(outputs_dir, unquote(rel_path))
+        if not path.exists() or not path.is_file():
+            return JSONResponse({"error": "File not found"}, status_code=404)
+        guessed_type = mimetypes.guess_type(str(path))[0] or "application/octet-stream"
+        return FileResponse(path, media_type=guessed_type)
+
+    print(f"UI server running at http://{host}:{port}")
+    print("Press Ctrl+C to stop.")
+    uvicorn.run(app, host=host, port=port, log_level="info")
+
+
+def _run_builtin_server(project_root: Path, config_path: Path, *, host: str, port: int) -> None:
+    handler = _make_handler(project_root.resolve(), Path(config_path))
     server = ThreadingHTTPServer((host, port), handler)
     print(f"UI server running at http://{host}:{port}")
     print("Press Ctrl+C to stop.")

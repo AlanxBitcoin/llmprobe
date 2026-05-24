@@ -15,7 +15,7 @@ from tools.analyze_command_word_layers import (
     render_dim_frequency_chart,
     render_layer_top10_lines,
 )
-from src.utils import write_text
+from src.utils.utils import write_text
 
 
 def load_rows(path: Path) -> list[dict[str, str]]:

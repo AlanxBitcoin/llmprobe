@@ -16,6 +16,10 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+# Design requirements (moved from PROJECT_DESIGN.md):
+# - Low-level model operation API layer (extract/modify/query hooks).
+# - Temporary model modifications should be restorable whenever possible.
+# - Keep business orchestration outside this module.
 """
 Hooks for direct manipulation of LLaMA models.
 This module contains utilities for:

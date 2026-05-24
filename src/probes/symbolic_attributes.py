@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+# Design requirements (moved from PROJECT_DESIGN.md):
+# - Provide symbolic attribute lookup/registry for token-level analysis.
+# - Keep symbolic data access centralized in probes layer helpers.
+
 from pathlib import Path
 from typing import Any
 
-from ..utils import load_yaml
+from ..utils.utils import load_yaml
 
 
 class SymbolicAttributeRegistry:

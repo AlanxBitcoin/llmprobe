@@ -1,12 +1,17 @@
 from __future__ import annotations
 
+# Design requirements (moved from PROJECT_DESIGN.md):
+# - Provide concept matching utilities for hidden-state interpretation.
+# - Concept catalogs are data-driven and loaded from data/ files.
+# - Keep matching logic reusable by pipeline/study layers.
+
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 import torch
 
-from ..utils import load_yaml, read_lines
+from ..utils.utils import load_yaml, read_lines
 
 
 def l2_normalize(vector: np.ndarray) -> np.ndarray:

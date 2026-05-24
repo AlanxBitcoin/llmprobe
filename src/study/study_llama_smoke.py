@@ -1,3 +1,7 @@
+# Design requirements (moved from PROJECT_DESIGN.md):
+# - Utility smoke script to validate basic local Llama loading/inference.
+# - Not part of production study/probe pipeline interfaces.
+
 import torch
 torch.set_grad_enabled(False)
 from transformers import AutoTokenizer, AutoModelForCausalLM

@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+# Design requirements (moved from PROJECT_DESIGN.md):
+# - Shared utility helpers for file I/O, serialization, and small transforms.
+# - Keep helpers generic and side-effect scope explicit.
+
 import json
 import re
 from pathlib import Path

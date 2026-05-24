@@ -1,5 +1,11 @@
 from __future__ import annotations
 
+# Design requirements (moved from PROJECT_DESIGN.md):
+# - Provide model loading + reuse APIs for long-lived runtime use.
+# - Expose get_model_bundle(config, force_reload=False).
+# - Reuse cached bundle when config is compatible; reload only when required.
+# - Expose release_model_bundle() for explicit resource cleanup.
+
 from pathlib import Path
 import importlib.util
 import site
@@ -70,6 +76,23 @@ class LocalModelBundle:
     def __init__(self, tokenizer, model) -> None:
         self.tokenizer = tokenizer
         self.model = model
+        self._compat_signature: tuple[Any, ...] | None = None
+
+
+_CACHED_BUNDLE: LocalModelBundle | None = None
+
+
+def _build_compat_signature(config: dict[str, Any]) -> tuple[Any, ...]:
+    model_cfg = dict((config or {}).get("model") or {})
+    return (
+        str(model_cfg.get("model_name_or_path", "")),
+        str(model_cfg.get("tokenizer_name_or_path") or ""),
+        str(model_cfg.get("device_map", "auto")),
+        str(model_cfg.get("torch_dtype", "float16")),
+        bool(model_cfg.get("load_in_4bit", False)),
+        bool(model_cfg.get("load_in_8bit", False)),
+        bool(model_cfg.get("trust_remote_code", True)),
+    )
 
 
 def load_local_model(config: dict[str, Any]) -> LocalModelBundle:
@@ -130,4 +153,38 @@ def load_local_model(config: dict[str, Any]) -> LocalModelBundle:
         runtime_device = "cuda" if has_cuda else "cpu"
         model.to(runtime_device)
     model.eval()
-    return LocalModelBundle(tokenizer=tokenizer, model=model)
+    bundle = LocalModelBundle(tokenizer=tokenizer, model=model)
+    bundle._compat_signature = _build_compat_signature(config)
+    return bundle
+
+
+def is_model_compatible(current: LocalModelBundle | None, config: dict[str, Any]) -> bool:
+    if current is None:
+        return False
+    expected = _build_compat_signature(config)
+    return getattr(current, "_compat_signature", None) == expected
+
+
+def release_model_bundle() -> None:
+    global _CACHED_BUNDLE
+    bundle = _CACHED_BUNDLE
+    _CACHED_BUNDLE = None
+    if bundle is None:
+        return
+    try:
+        del bundle.model
+        del bundle.tokenizer
+    except Exception:
+        pass
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+
+
+def get_model_bundle(config: dict[str, Any], force_reload: bool = False) -> LocalModelBundle:
+    global _CACHED_BUNDLE
+    if not force_reload and is_model_compatible(_CACHED_BUNDLE, config):
+        return _CACHED_BUNDLE  # type: ignore[return-value]
+    if _CACHED_BUNDLE is not None:
+        release_model_bundle()
+    _CACHED_BUNDLE = load_local_model(config)
+    return _CACHED_BUNDLE

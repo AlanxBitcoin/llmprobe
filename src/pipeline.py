@@ -1,5 +1,11 @@
 from __future__ import annotations
 
+# Design requirements (moved from PROJECT_DESIGN.md):
+# - ProbePipeline coordinates end-to-end study/probe workflows.
+# - Hidden states should come through extract_hidden/hidden_store interfaces.
+# - Output artifacts are written under data/outputs.
+# - Pipeline remains orchestration layer; probe training logic stays in src/probes.
+
 import hashlib
 import html
 import re
@@ -11,13 +17,13 @@ import numpy as np
 
 from .probes.attribute_probe import build_feature_bank, fit_full_attribute_probes, load_attribute_rows, predict_word_attributes
 from .probes.concept_match import ConceptMatcher
-from .extract_hidden import extract_sequence_positional_states, extract_word_hidden_states, summarize_top_dims
+from .utils.extract_hidden import extract_sequence_positional_states, extract_word_hidden_states, summarize_top_dims
 from .probes.symbolic_attributes import SymbolicAttributeRegistry
-from .utils import chunked, ensure_dir, read_lines, safe_stem, write_csv, write_json, write_text
-from .video import preferred_video_suffix, synthesize_video
-from .visualize_multi_word import render_multi_word_dashboard
-from .visualize_single_word import render_single_word_dashboard
-from .visualize_color_experiment import (
+from .utils.utils import chunked, ensure_dir, read_lines, safe_stem, write_csv, write_json, write_text
+from .utils.video import preferred_video_suffix, synthesize_video
+from .utils.visualize_multi_word import render_multi_word_dashboard
+from .utils.visualize_single_word import render_single_word_dashboard
+from .utils.visualize_color_experiment import (
     render_per_word_dim_stats,
     render_all_input_dim_stats,
     render_three_mode_comparison,
@@ -58,7 +64,7 @@ class ProbePipeline:
     def _run_single_word_with_vector(self, word: str) -> tuple[dict[str, Any], np.ndarray]:
         analysis_cfg = self.config["analysis"]
         target_layer = int(analysis_cfg["target_layer"])
-        hidden = extract_word_hidden_states(self.bundle, word)
+        hidden = extract_word_hidden_states(self.bundle, word, config=self.config)
         layer_vector = np.asarray(hidden["layers"][target_layer]["vector"], dtype=np.float32)
         result = self._build_vector_result(
             word=word,
@@ -245,7 +251,7 @@ class ProbePipeline:
     def run_combined_word_sum(self, words: list[str]) -> dict[str, Any]:
         if len(words) < 2:
             raise ValueError("Need at least two words to build a combined sum.")
-        hidden_per_word = [extract_word_hidden_states(self.bundle, word) for word in words]
+        hidden_per_word = [extract_word_hidden_states(self.bundle, word, config=self.config) for word in words]
         target_layer = int(self.config["analysis"]["target_layer"])
         vectors = [np.asarray(hidden["layers"][target_layer]["vector"], dtype=np.float32) for hidden in hidden_per_word]
         combined_vector = np.sum(np.stack(vectors, axis=0), axis=0)
@@ -261,8 +267,8 @@ class ProbePipeline:
 
     def run_combined_word_diff(self, minuend: str, subtrahend: str) -> dict[str, Any]:
         target_layer = int(self.config["analysis"]["target_layer"])
-        left = extract_word_hidden_states(self.bundle, minuend)
-        right = extract_word_hidden_states(self.bundle, subtrahend)
+        left = extract_word_hidden_states(self.bundle, minuend, config=self.config)
+        right = extract_word_hidden_states(self.bundle, subtrahend, config=self.config)
         left_vector = np.asarray(left["layers"][target_layer]["vector"], dtype=np.float32)
         right_vector = np.asarray(right["layers"][target_layer]["vector"], dtype=np.float32)
         combined_vector = left_vector - right_vector
@@ -334,7 +340,7 @@ class ProbePipeline:
         return str(figure_path)
 
     def run_multi_word(self, words: list[str]) -> dict[str, Any]:
-        hidden_per_word = [extract_word_hidden_states(self.bundle, word) for word in words]
+        hidden_per_word = [extract_word_hidden_states(self.bundle, word, config=self.config) for word in words]
         layer_count = len(hidden_per_word[0]["layers"])
         layer_strengths = np.zeros((layer_count, len(words)), dtype=np.float32)
         for word_idx, hidden in enumerate(hidden_per_word):
@@ -429,7 +435,7 @@ class ProbePipeline:
 
         vectors: dict[str, np.ndarray] = {}
         for word in words:
-            hidden = extract_word_hidden_states(self.bundle, word)
+            hidden = extract_word_hidden_states(self.bundle, word, config=self.config)
             vectors[word] = np.asarray(hidden["layers"][target_layer]["vector"], dtype=np.float32)
 
         if not dims:
@@ -548,8 +554,8 @@ class ProbePipeline:
 
     def run_word_contrast_report(self, left_word: str, right_word: str) -> dict[str, Any]:
         target_layer = int(self.config["analysis"]["target_layer"])
-        left_hidden = extract_word_hidden_states(self.bundle, left_word)
-        right_hidden = extract_word_hidden_states(self.bundle, right_word)
+        left_hidden = extract_word_hidden_states(self.bundle, left_word, config=self.config)
+        right_hidden = extract_word_hidden_states(self.bundle, right_word, config=self.config)
         left_vector = np.asarray(left_hidden["layers"][target_layer]["vector"], dtype=np.float32)
         right_vector = np.asarray(right_hidden["layers"][target_layer]["vector"], dtype=np.float32)
         diff_vector = left_vector - right_vector
@@ -658,7 +664,7 @@ class ProbePipeline:
     def _get_fitted_attribute_probes(self, target_layer: int) -> dict[str, Any]:
         if self._attribute_probe_cache is None:
             rows = load_attribute_rows("data/word_attributes.csv")
-            feature_bank = build_feature_bank(self.bundle, rows, target_layer)
+            feature_bank = build_feature_bank(self.bundle, rows, target_layer, config=self.config)
             self._attribute_probe_cache = fit_full_attribute_probes(feature_bank, rows)
         return self._attribute_probe_cache
 

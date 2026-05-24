@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+# Design requirements (moved from PROJECT_DESIGN.md):
+# - Provide stable probe-layer exports for upper-layer imports.
+
 from .linear_probe import build_probe_dataset, export_probe_results, load_labeled_words, train_linear_probe
 
 __all__ = [

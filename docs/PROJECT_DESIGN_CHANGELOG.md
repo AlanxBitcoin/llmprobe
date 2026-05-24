@@ -9,6 +9,92 @@
 
 ---
 
+## v1.31 (2026-05-24)
+- UI 服务层对齐技术栈说明（FastAPI/ASGI）：
+  - `src/ui/server.py` 更新为“优先 FastAPI + uvicorn 启动”；
+  - 若本地缺少依赖则自动回退到内置 `http.server`，保持本地可用性。
+- 保持接口兼容：`run_ui_server(...)` 调用方式不变，路由行为不变（`/`, `/api/actions`, `/api/execute`, `/static/*`, `/outputs/*`）。
+
+## v1.30 (2026-05-24)
+- 继续对齐 `PROJECT_DESIGN.md` 与代码职责边界：
+  - `src/config.py` 增加配置验证入口 `validate_config(...)`，`load_config(...)` 在加载后执行基础结构校验。
+  - `src/main.py` 将 `run-probe` / `run-attribute-probe` 路由改为调用 `src/study` 层入口（`run_linear_probe_study` / `run_attribute_probe_study`），避免主入口直接承载 Probe 训练细节。
+
+## v1.29 (2026-05-24)
+- 将“设计拆分索引”从文档末尾移动到文档前部（工作规则之后、目录之前），提升按需阅读效率并减少不必要读取。
+
+## v1.28 (2026-05-24)
+- 补充文档工作规则：
+  - `docs/design_split/` 仍是有效规范，涉及跨文件内容时必须同步维护。
+  - 工作时按需读取 split 文档，避免全量阅读。
+  - 不能下沉到单个 `.py` 的跨模块规则（数据流/依赖/流程）继续保留在 split 文档。
+
+## v1.27 (2026-05-24)
+- 完成“`.py` 文件需求下沉到文件头注释”的全覆盖对齐：
+  - `src/probes/`（含 `base_probe.py`、`__init__.py`）
+  - `src/study/`（含 smoke/diagnostic 脚本与 `__init__.py`）
+  - `src/test/`（全部测试模块）
+  - `src/ui/`（`result_render.py`、`__init__.py`）
+  - `src/utils/`（`hooks.py`、`utils.py`、`video.py`、`visualize_*`、`__init__.py`）
+- 全量检查结果：`src` 下所有 `.py` 文件均包含 design header 注释；`compileall src` 通过。
+
+## v1.26 (2026-05-24)
+- 继续执行“需求下沉到 `.py` 文件头注释”规则，补齐以下模块头注释：
+  - `src/main.py`, `src/config.py`
+  - `src/probes/linear_probe.py`, `src/probes/attribute_probe.py`, `src/probes/concept_match.py`, `src/probes/symbolic_attributes.py`
+  - `src/study/study_linear_probe.py`, `src/study/study_attribute_probe.py`
+  - `src/ui/server.py`, `src/ui/routes.py`, `src/ui/registry.py`, `src/ui/forms.py`
+
+## v1.25 (2026-05-24)
+- 在 `PROJECT_DESIGN.md` 新增“文档工作规则”：
+  - 主文档保持目录结构与跨文件规则；
+  - `.py` 级需求下沉到对应文件头注释；
+  - 新功能优先更新目标 `.py` 文件头注释，再同步主文档的目录级规则。
+
+## v1.24 (2026-05-24)
+- 按“前 300 行保留在主文档”的规则拆分 `PROJECT_DESIGN.md`：
+  - `docs/PROJECT_DESIGN.md` 仅保留前 300 行 + 拆分索引。
+  - 新增 `docs/design_split/` 下 5 个子文档：
+    - `CORE_MODULES.md`
+    - `DATA_FLOW.md`
+    - `CONFIG_AND_API.md`
+    - `DEPENDENCY_AND_EXTENSION.md`
+    - `WORKFLOW_FAQ.md`
+- 将核心模块需求迁移到对应代码文件头注释：
+  - `src/model_loader.py`
+  - `src/runtime_api.py`
+  - `src/utils/extract_hidden.py`
+  - `src/utils/token_hidden_store.py`
+  - `src/pipeline.py`
+
+## v1.23 (2026-05-24)
+- 继续补齐设计文档中的测试层文件：
+  - 新增 `src/test/test_model_loader.py`
+  - 新增 `src/test/test_runtime_api.py`
+  - 新增 `src/test/test_hooks.py`
+  - 新增 `src/test/test_probe_csv_schema.py`
+  - 新增 `src/test/test_ui_routes.py`
+- 所有新增测试为轻量单测，不触发真实模型加载；并已通过 `compileall` 与导入检查。
+
+## v1.22 (2026-05-24)
+- 继续对齐 `PROJECT_DESIGN.md` 与代码：
+  - 在 `src/utils/extract_hidden.py` 补齐设计文档约定的三种提取 API 名称：
+    - `extract_single_word_states(...)`
+    - `extract_all_words_state(...)`
+    - `extract_sequence_positional_states(...)`（已存在）
+  - 新增 `src/probes/base_probe.py`，补齐 Probe 基类文件。
+  - 新增 `src/study/study_linear_probe.py` 与 `src/study/study_attribute_probe.py`，并在 `src/study/__init__.py` 导出 study 入口。
+
+## v1.21 (2026-05-24)
+- 补齐第1层运行时 API 代码实现：
+  - 新增 `src/runtime_api.py`，提供 `start_llama_api`、`get_runtime_api`、`execute_model_call`、`shutdown_llama_api`。
+  - `src/model_loader.py` 新增 `get_model_bundle`、`is_model_compatible`、`release_model_bundle`，用于常驻模型复用与按需重载。
+- 主入口对齐设计文档：
+  - `src/main.py` 新增 `start_app(...)`，无子命令启动时先按配置启动 Llama API，再启动 UI server。
+- UI 执行链路改为进程内调用：
+  - `src/ui/routes.py` 从 `subprocess` 调用 `python -m src.main` 改为直接调用 `src.main.run_cli_command(...)`，
+    以复用当前进程内模型缓存，减少重复加载开销。
+
 ## v1.20 (2026-05-24)
 - 文档同步 `build-token-hidden-store` 构建入口：
   - 在 `src/main.py` 增加单协议构建命令，支持 `--bos` 与 `--assistant` 参数。

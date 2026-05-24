@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+# Design requirements (moved from PROJECT_DESIGN.md):
+# - Registry defines available Study/Probe actions for UI buttons.
+# - Each action binds command id + form schema with stable metadata.
+
 from dataclasses import dataclass
 from typing import Any
 

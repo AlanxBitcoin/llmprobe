@@ -1,9 +1,16 @@
 from __future__ import annotations
 
+# Design requirements (moved from PROJECT_DESIGN.md):
+# - Single application entry under src/main.py.
+# - Default config path is configs/custom.yaml.
+# - No-command launch should start runtime API then local UI server.
+# - CLI subcommands execute study/probe/cache build workflows.
+
 import argparse
 import os
 import sys
 from pathlib import Path
+from typing import Any
 import torch
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -30,17 +37,16 @@ if "MPLCONFIGDIR" not in os.environ:
     os.environ["MPLCONFIGDIR"] = str(mpl_dir.resolve())
 
 from src.config import load_config
-from src.model_loader import load_local_model
+from src.model_loader import get_model_bundle
 from src.pipeline import ProbePipeline
 from src.probes.attribute_probe import (
     build_feature_bank,
-    export_attribute_probe_results,
     fit_full_attribute_probes,
     load_attribute_rows,
     predict_word_attributes,
-    train_attribute_probes,
 )
-from src.probes.linear_probe import build_probe_dataset, export_probe_results, load_labeled_words, train_linear_probe
+from src.runtime_api import start_llama_api
+from src.study import run_attribute_probe_study, run_linear_probe_study
 from src.utils.token_hidden_store import build_store_for_protocol
 from src.utils.utils import write_json
 
@@ -134,19 +140,28 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def main() -> None:
-    os.chdir(PROJECT_ROOT)
-    parser = build_parser()
-    args = parser.parse_args()
-    config = load_config(args.config)
+def start_app(config_path: str | Path = "configs/custom.yaml", *, config: dict[str, Any] | None = None) -> None:
+    effective_config = config or load_config(config_path)
+    runtime_cfg = (effective_config or {}).get("runtime", {})
+    ui_cfg = (effective_config or {}).get("ui", {})
 
-    if args.command is None:
+    if bool(runtime_cfg.get("start_llama_api_on_boot", True)):
+        start_llama_api(effective_config)
+
+    if bool(ui_cfg.get("enabled", True)) and bool(ui_cfg.get("start_server_on_boot", True)):
         from src.ui import run_ui_server
 
-        run_ui_server(config, config_path=args.config)
+        run_ui_server(effective_config, config_path=config_path)
+        return
+    print("No server started because ui.enabled/start_server_on_boot is false.")
+
+
+def _execute_parsed_args(args: argparse.Namespace, config: dict[str, Any]) -> None:
+    if args.command is None:
+        start_app(args.config, config=config)
         return
 
-    bundle = load_local_model(config)
+    bundle = get_model_bundle(config)
     if args.command == "build-token-hidden-store":
         result = build_store_for_protocol(
             bundle,
@@ -214,17 +229,19 @@ def main() -> None:
         report = pipeline.run_word_contrast_report(args.left_word, args.right_word)
         pipeline.save_word_contrast_report(report)
     elif args.command == "run-probe":
-        label_rows = load_labeled_words(args.label_file)
-        target_layer = int(config["analysis"]["target_layer"])
-        dataset = build_probe_dataset(bundle, label_rows, target_layer, config=config)
-        results = train_linear_probe(dataset, config=config)
-        export_probe_results("data/outputs/probe", results)
+        run_linear_probe_study(
+            config=config,
+            config_path=args.config,
+            label_file=args.label_file,
+            output_dir="data/outputs/probe",
+        )
     elif args.command == "run-attribute-probe":
-        target_layer = int(config["analysis"]["target_layer"])
-        rows = load_attribute_rows(args.attribute_file)
-        feature_bank = build_feature_bank(bundle, rows, target_layer, config=config)
-        results = train_attribute_probes(feature_bank, rows, config=config)
-        export_attribute_probe_results("data/outputs/attribute_probe", results)
+        run_attribute_probe_study(
+            config=config,
+            config_path=args.config,
+            attribute_file=args.attribute_file,
+            output_dir="data/outputs/attribute_probe",
+        )
     elif args.command == "predict-attributes":
         target_layer = int(config["analysis"]["target_layer"])
         rows = load_attribute_rows(args.attribute_file)
@@ -232,6 +249,22 @@ def main() -> None:
         fitted = fit_full_attribute_probes(feature_bank, rows, config=config)
         result = predict_word_attributes(bundle, fitted, args.word, target_layer, config=config)
         write_json(f"data/outputs/predict_{args.word}.json", result)
+
+
+def run_cli_command(config_path: str | Path, command_args: list[str]) -> int:
+    parser = build_parser()
+    args = parser.parse_args(["--config", str(config_path), *command_args])
+    config = load_config(args.config)
+    _execute_parsed_args(args, config)
+    return 0
+
+
+def main() -> None:
+    os.chdir(PROJECT_ROOT)
+    parser = build_parser()
+    args = parser.parse_args()
+    config = load_config(args.config)
+    _execute_parsed_args(args, config)
 
 
 if __name__ == "__main__":

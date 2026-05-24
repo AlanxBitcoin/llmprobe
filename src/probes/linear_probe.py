@@ -1,5 +1,10 @@
 from __future__ import annotations
 
+# Design requirements (moved from PROJECT_DESIGN.md):
+# - Define linear probe training/evaluation workflow and CSV outputs.
+# - Use hidden vectors from extraction layer; keep probe logic in probes/.
+# - Export stable CSV columns for downstream UI/report usage.
+
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -9,8 +14,8 @@ from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import accuracy_score, classification_report, confusion_matrix
 from sklearn.model_selection import train_test_split
 
-from ..extract_hidden import extract_word_hidden_states
-from ..utils import ensure_dir, write_csv, write_json
+from ..utils.extract_hidden import extract_word_hidden_states
+from ..utils.utils import ensure_dir, write_csv, write_json
 
 
 @dataclass
@@ -32,12 +37,17 @@ def load_labeled_words(label_file: str | Path) -> list[dict[str, str]]:
     return rows
 
 
-def build_probe_dataset(bundle, label_rows: list[dict[str, str]], target_layer: int) -> ProbeDataset:
+def build_probe_dataset(
+    bundle,
+    label_rows: list[dict[str, str]],
+    target_layer: int,
+    config: dict[str, Any] | None = None,
+) -> ProbeDataset:
     words: list[str] = []
     labels: list[str] = []
     vectors: list[np.ndarray] = []
     for row in label_rows:
-        hidden = extract_word_hidden_states(bundle, row["word"])
+        hidden = extract_word_hidden_states(bundle, row["word"], config=config)
         vector = np.asarray(hidden["layers"][target_layer]["vector"], dtype=np.float32)
         words.append(row["word"])
         labels.append(row["primary_label"])

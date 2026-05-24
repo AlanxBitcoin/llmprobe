@@ -1,5 +1,10 @@
 from __future__ import annotations
 
+# Design requirements (moved from PROJECT_DESIGN.md):
+# - Define attribute-family probes and structured prediction outputs.
+# - Train/evaluate/export remains in probes/ layer (not UI/pipeline internals).
+# - Keep exported CSV summary/prediction schema stable.
+
 from pathlib import Path
 from typing import Any
 
@@ -8,8 +13,8 @@ from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import accuracy_score, classification_report
 from sklearn.model_selection import train_test_split
 
-from ..extract_hidden import extract_word_hidden_states
-from ..utils import ensure_dir, write_csv, write_json
+from ..utils.extract_hidden import extract_word_hidden_states
+from ..utils.utils import ensure_dir, write_csv, write_json
 
 
 def load_attribute_rows(path: str | Path) -> list[dict[str, str]]:
@@ -26,10 +31,15 @@ def load_attribute_rows(path: str | Path) -> list[dict[str, str]]:
     return rows
 
 
-def build_feature_bank(bundle, rows: list[dict[str, str]], target_layer: int) -> dict[str, np.ndarray]:
+def build_feature_bank(
+    bundle,
+    rows: list[dict[str, str]],
+    target_layer: int,
+    config: dict[str, Any] | None = None,
+) -> dict[str, np.ndarray]:
     bank: dict[str, np.ndarray] = {}
     for row in rows:
-        hidden = extract_word_hidden_states(bundle, row["word"])
+        hidden = extract_word_hidden_states(bundle, row["word"], config=config)
         bank[row["word"]] = np.asarray(hidden["layers"][target_layer]["vector"], dtype=np.float32)
     return bank
 
@@ -199,7 +209,7 @@ def predict_word_attributes(
     
     top_k = config.get("analysis", {}).get("top_k_predictions", 5)
     
-    hidden = extract_word_hidden_states(bundle, word)
+    hidden = extract_word_hidden_states(bundle, word, config=config)
     vector = np.asarray(hidden["layers"][target_layer]["vector"], dtype=np.float32).reshape(1, -1)
     predictions: dict[str, Any] = {}
     for attribute, payload in fitted_probes.items():

@@ -22,7 +22,7 @@ sys.path.insert(0, str(ROOT))
 
 from src.config import load_config
 from src.model_loader import load_local_model
-from src.utils import ensure_dir, read_lines, write_csv, write_json, write_text
+from src.utils.utils import ensure_dir, read_lines, write_csv, write_json, write_text
 
 
 def _model_device(model) -> torch.device:

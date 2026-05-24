@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+# Design requirements (moved from PROJECT_DESIGN.md):
+# - Central schema list for UI parameter forms.
+# - Form defaults and constraints should match callable action args.
+
 from typing import Any
 
 

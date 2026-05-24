@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+# Design requirements (moved from PROJECT_DESIGN.md):
+# - Build optional video artifacts from generated frame images.
+# - Keep codec/fallback behavior deterministic for local runs.
+
 from pathlib import Path
 from typing import Literal
 

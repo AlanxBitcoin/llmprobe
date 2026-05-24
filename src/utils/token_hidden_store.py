@@ -1,5 +1,11 @@
 from __future__ import annotations
 
+# Design requirements (moved from PROJECT_DESIGN.md):
+# - Store token hidden states in fixed-size binary files under data/cache.
+# - Keep protocol-separated files (bos0_assistant0 / bos1_assistant0 / bos1_assistant1).
+# - Support read-through behavior: cache hit returns directly; miss computes then writes back.
+# - Support resumable build via per-token done map.
+
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any

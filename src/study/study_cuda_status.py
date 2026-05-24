@@ -1,3 +1,7 @@
+# Design requirements (moved from PROJECT_DESIGN.md):
+# - Utility smoke script for local CUDA/runtime diagnostics only.
+# - Not part of production study/probe pipeline interfaces.
+
 import sys
 import torch
 

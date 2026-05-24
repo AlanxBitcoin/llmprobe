@@ -8,7 +8,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from src.visualize_color_experiment import (
+from src.utils.visualize_color_experiment import (
     render_full_4096_mean_landscape,
     render_full_4096_top_signed_bars,
 )

@@ -7,6 +7,10 @@ visible from the bar direction on the x-axis.
 
 from __future__ import annotations
 
+# Design requirements (moved from PROJECT_DESIGN.md):
+# - Generate color-experiment charts used by pipeline outputs.
+# - Keep chart generation isolated from probe/model logic.
+
 import os
 from pathlib import Path
 from typing import Any

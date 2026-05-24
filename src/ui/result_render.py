@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+# Design requirements (moved from PROJECT_DESIGN.md):
+# - Transform run artifacts into UI-facing preview payloads.
+# - Keep rendering helpers pure and file-system scoped.
+
 import csv
 from pathlib import Path
 from typing import Any
