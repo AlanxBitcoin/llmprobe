@@ -2,8 +2,15 @@ from __future__ import annotations
 
 import argparse
 import os
+import sys
 from pathlib import Path
 import torch
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+os.environ["TRANSFORMERS_VERBOSITY"] = "error"
 
 # 1. 关日志、关梯度（必开）
 os.environ["TRANSFORMERS_VERBOSITY"] = "error"
@@ -18,7 +25,7 @@ torch.backends.cudnn.benchmark = True
 device = torch.device("cuda:0")
 
 if "MPLCONFIGDIR" not in os.environ:
-    mpl_dir = Path(".mplconfig")
+    mpl_dir = PROJECT_ROOT / ".mplconfig"
     mpl_dir.mkdir(parents=True, exist_ok=True)
     os.environ["MPLCONFIGDIR"] = str(mpl_dir.resolve())
 
@@ -34,7 +41,17 @@ from src.probes.attribute_probe import (
     train_attribute_probes,
 )
 from src.probes.linear_probe import build_probe_dataset, export_probe_results, load_labeled_words, train_linear_probe
-from src.utils import write_json
+from src.utils.token_hidden_store import build_store_for_protocol
+from src.utils.utils import write_json
+
+
+def _parse_bool_flag(value: str) -> bool:
+    normalized = value.strip().lower()
+    if normalized in {"true", "1", "yes", "y"}:
+        return True
+    if normalized in {"false", "0", "no", "n"}:
+        return False
+    raise argparse.ArgumentTypeError(f"Invalid boolean flag: {value!r}. Use true/false.")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -108,10 +125,17 @@ def build_parser() -> argparse.ArgumentParser:
     attr_predict.add_argument("word", help="Bare English word")
     attr_predict.add_argument("--attribute-file", default="data/word_attributes.csv", help="CSV file with structured word attributes")
 
+    build_store = subparsers.add_parser("build-token-hidden-store", help="Build token hidden-state cache for one protocol")
+    build_store.add_argument("--bos", type=_parse_bool_flag, default=True, help="Whether to prepend BOS (true/false)")
+    build_store.add_argument("--assistant", type=_parse_bool_flag, default=False, help="Whether to include assistant prompt prefix (true/false)")
+    build_store.add_argument("--limit", type=int, default=0, help="Optional max token count to process in this run (0 = all)")
+    build_store.add_argument("--start-token-id", type=int, default=0, help="Token id to start from (default: 0)")
+
     return parser
 
 
 def main() -> None:
+    os.chdir(PROJECT_ROOT)
     parser = build_parser()
     args = parser.parse_args()
     config = load_config(args.config)
@@ -123,6 +147,21 @@ def main() -> None:
         return
 
     bundle = load_local_model(config)
+    if args.command == "build-token-hidden-store":
+        result = build_store_for_protocol(
+            bundle,
+            config,
+            bos=bool(args.bos),
+            assistant=bool(args.assistant),
+            limit=int(args.limit),
+            start_token_id=int(args.start_token_id),
+        )
+        print("[hidden_store] build finished")
+        for key in ("protocol", "token_count", "processed", "written", "skipped_done", "start_token_id", "end_token_id", "data_file", "progress_file"):
+            if key in result:
+                print(f"[hidden_store] {key}={result[key]}")
+        return
+
     pipeline = ProbePipeline(config, bundle)
 
     if args.command == "run-single-batch":
@@ -177,19 +216,19 @@ def main() -> None:
     elif args.command == "run-probe":
         label_rows = load_labeled_words(args.label_file)
         target_layer = int(config["analysis"]["target_layer"])
-        dataset = build_probe_dataset(bundle, label_rows, target_layer)
+        dataset = build_probe_dataset(bundle, label_rows, target_layer, config=config)
         results = train_linear_probe(dataset, config=config)
         export_probe_results("data/outputs/probe", results)
     elif args.command == "run-attribute-probe":
         target_layer = int(config["analysis"]["target_layer"])
         rows = load_attribute_rows(args.attribute_file)
-        feature_bank = build_feature_bank(bundle, rows, target_layer)
+        feature_bank = build_feature_bank(bundle, rows, target_layer, config=config)
         results = train_attribute_probes(feature_bank, rows, config=config)
         export_attribute_probe_results("data/outputs/attribute_probe", results)
     elif args.command == "predict-attributes":
         target_layer = int(config["analysis"]["target_layer"])
         rows = load_attribute_rows(args.attribute_file)
-        feature_bank = build_feature_bank(bundle, rows, target_layer)
+        feature_bank = build_feature_bank(bundle, rows, target_layer, config=config)
         fitted = fit_full_attribute_probes(feature_bank, rows, config=config)
         result = predict_word_attributes(bundle, fitted, args.word, target_layer, config=config)
         write_json(f"data/outputs/predict_{args.word}.json", result)
