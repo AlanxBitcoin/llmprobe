@@ -42,6 +42,14 @@ UI_ACTIONS: dict[str, UIAction] = {
         command="run-single-word-hidden-state",
         form_schema="single_word_hidden_state_form",
     ),
+    "study_single_word_top_100_neurons": UIAction(
+        id="study_single_word_top_100_neurons",
+        label="Single Word Top 100 Neurons",
+        description="Heatmap + baseline top15 logits + penultimate-layer top100-neuron intervention top15 logits.",
+        kind="study",
+        command="run-single-word-top-100-neurons",
+        form_schema="single_word_top_100_neurons_form",
+    ),
     "study_single_word": UIAction(
         id="study_single_word",
         label="Single Word",
@@ -109,6 +117,15 @@ def build_command_args(action: UIAction, params: dict[str, Any]) -> list[str]:
         return [action.command, str(params.get("word") or "apple")]
     if action.command == "run-single-word-hidden-state":
         return [action.command, str(params.get("word") or "apple")]
+    if action.command == "run-single-word-top-100-neurons":
+        return [
+            action.command,
+            str(params.get("word") or "apple"),
+            "--top-k-neurons",
+            str(params.get("top_k_neurons") or 100),
+            "--intervention-layer",
+            str(params.get("intervention_layer") or 30),
+        ]
     if action.command == "run-color-words-experiment":
         return [
             action.command,

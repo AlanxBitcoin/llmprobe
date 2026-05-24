@@ -83,7 +83,7 @@ def execute_ui_action(
         return_code = 0
         # Hidden-state heatmap action returns payload directly; scanning large outputs
         # directories here can block UI response for a long time.
-        if action.command == "run-single-word-hidden-state":
+        if action.command in {"run-single-word-hidden-state", "run-single-word-top-100-neurons"}:
             artifacts = []
             csv_preview = None
         else:

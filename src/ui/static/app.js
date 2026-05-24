@@ -231,7 +231,24 @@ function renderHeatmapIntoDoc(doc, container, heatmap) {
     msg.className = "error";
     msg.textContent = "No heatmap result.";
     container.appendChild(msg);
-    renderTopLogitsTableIntoDoc(doc, container, heatmap && heatmap.top_logits ? heatmap.top_logits : [], heatmap);
+    renderTopLogitsTableIntoDoc(
+      doc,
+      container,
+      heatmap && heatmap.top_logits ? heatmap.top_logits : [],
+      heatmap,
+      "Top 15 Logits (with cosine similarity)",
+      "logits_source",
+      "logits_error",
+    );
+    renderTopLogitsTableIntoDoc(
+      doc,
+      container,
+      heatmap && heatmap.top_logits_top100 ? heatmap.top_logits_top100 : [],
+      heatmap,
+      "Top 15 Logits (Penultimate Top-100 Intervention)",
+      "top_logits_top100_source",
+      "top_logits_top100_error",
+    );
     return;
   }
   const rows = Number(heatmap.rows || heatmap.matrix.length);
@@ -310,19 +327,47 @@ function renderHeatmapIntoDoc(doc, container, heatmap) {
 
   drawWithThreshold(heatmapThreshold);
 
-  renderTopLogitsTableIntoDoc(doc, container, heatmap.top_logits || [], heatmap);
+  renderTopLogitsTableIntoDoc(
+    doc,
+    container,
+    heatmap.top_logits || [],
+    heatmap,
+    "Top 15 Logits (with cosine similarity)",
+    "logits_source",
+    "logits_error",
+  );
+  renderTopLogitsTableIntoDoc(
+    doc,
+    container,
+    heatmap.top_logits_top100 || [],
+    heatmap,
+    "Top 15 Logits (Penultimate Top-100 Intervention)",
+    "top_logits_top100_source",
+    "top_logits_top100_error",
+  );
 }
 
-function renderTopLogitsTableIntoDoc(doc, container, rows, heatmap) {
+function renderTopLogitsTableIntoDoc(doc, container, rows, heatmap, titleText, sourceKey, errorKey) {
+  if (!Array.isArray(rows) && !heatmap) return;
   const title = doc.createElement("h3");
-  title.textContent = "Top 15 Logits (with cosine similarity)";
+  title.textContent = titleText || "Top Logits";
   container.appendChild(title);
   const info = doc.createElement("div");
   info.className = "muted";
-  const source = heatmap && heatmap.logits_source ? heatmap.logits_source : "unknown";
-  const err = heatmap && heatmap.logits_error ? `, error=${heatmap.logits_error}` : "";
+  const source = heatmap && heatmap[sourceKey] ? heatmap[sourceKey] : "unknown";
+  const err = heatmap && heatmap[errorKey] ? `, error=${heatmap[errorKey]}` : "";
   info.textContent = `logits_source=${source}${err}`;
   container.appendChild(info);
+  if (sourceKey === "top_logits_top100_source") {
+    const req = heatmap && heatmap.top100_request ? heatmap.top100_request : {};
+    const meta = heatmap && heatmap.top100_intervention ? heatmap.top100_intervention : {};
+    const topK = req.top_k_neurons ?? meta.keep_k;
+    const layer = req.intervention_layer ?? meta.injection_layer_index;
+    const params = doc.createElement("div");
+    params.className = "muted";
+    params.textContent = `top_k_neurons=${topK ?? "-"}, intervention_layer=${layer ?? "-"}`;
+    container.appendChild(params);
+  }
   if (!Array.isArray(rows) || rows.length === 0) {
     const empty = doc.createElement("div");
     empty.className = "muted";
@@ -413,7 +458,20 @@ function renderHiddenStateHeatmap(heatmap) {
     msg.className = "error";
     msg.textContent = `Hidden-state heatmap requires a single-token word. token_count=${Number(heatmap.token_count || 0)}`;
     hiddenStateContainer.appendChild(msg);
-    renderTopLogitsTable(heatmap.top_logits || [], heatmap);
+    renderTopLogitsTable(
+      heatmap.top_logits || [],
+      heatmap,
+      "Top 15 Logits (with cosine similarity)",
+      "logits_source",
+      "logits_error",
+    );
+    renderTopLogitsTable(
+      heatmap.top_logits_top100 || [],
+      heatmap,
+      "Top 15 Logits (Penultimate Top-100 Intervention)",
+      "top_logits_top100_source",
+      "top_logits_top100_error",
+    );
     return;
   }
   if (!heatmap || !Array.isArray(heatmap.matrix) || heatmap.matrix.length === 0) {
@@ -525,20 +583,44 @@ function renderHiddenStateHeatmap(heatmap) {
   });
 
   drawWithThreshold(heatmapThreshold);
-  renderTopLogitsTable(heatmap.top_logits || [], heatmap);
+  renderTopLogitsTable(
+    heatmap.top_logits || [],
+    heatmap,
+    "Top 15 Logits (with cosine similarity)",
+    "logits_source",
+    "logits_error",
+  );
+  renderTopLogitsTable(
+    heatmap.top_logits_top100 || [],
+    heatmap,
+    "Top 15 Logits (Penultimate Top-100 Intervention)",
+    "top_logits_top100_source",
+    "top_logits_top100_error",
+  );
 }
 
-function renderTopLogitsTable(rows, heatmap) {
+function renderTopLogitsTable(rows, heatmap, titleText, sourceKey, errorKey) {
+  if (!Array.isArray(rows) && !heatmap) return;
   const title = document.createElement("p");
   title.className = "heatmap-meta";
-  title.textContent = "Top 15 Logits (with cosine similarity)";
+  title.textContent = titleText || "Top Logits";
   hiddenStateContainer.appendChild(title);
   const info = document.createElement("p");
   info.className = "heatmap-meta";
-  const source = heatmap && heatmap.logits_source ? heatmap.logits_source : "unknown";
-  const err = heatmap && heatmap.logits_error ? `, error=${heatmap.logits_error}` : "";
+  const source = heatmap && heatmap[sourceKey] ? heatmap[sourceKey] : "unknown";
+  const err = heatmap && heatmap[errorKey] ? `, error=${heatmap[errorKey]}` : "";
   info.textContent = `logits_source=${source}${err}`;
   hiddenStateContainer.appendChild(info);
+  if (sourceKey === "top_logits_top100_source") {
+    const req = heatmap && heatmap.top100_request ? heatmap.top100_request : {};
+    const meta = heatmap && heatmap.top100_intervention ? heatmap.top100_intervention : {};
+    const topK = req.top_k_neurons ?? meta.keep_k;
+    const layer = req.intervention_layer ?? meta.injection_layer_index;
+    const params = document.createElement("p");
+    params.className = "heatmap-meta";
+    params.textContent = `top_k_neurons=${topK ?? "-"}, intervention_layer=${layer ?? "-"}`;
+    hiddenStateContainer.appendChild(params);
+  }
   if (!Array.isArray(rows) || rows.length === 0) {
     const empty = document.createElement("p");
     empty.className = "heatmap-meta";

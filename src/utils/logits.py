@@ -38,7 +38,15 @@ def rank_vector_by_logits(
             hidden_for_logits = final_norm(hidden_for_logits)
 
     with torch.no_grad():
-        logits = lm_head(hidden_for_logits).squeeze(0).to(dtype=torch.float32)
+        cfg = getattr(model, "config", None)
+        pretraining_tp = int(getattr(cfg, "pretraining_tp", 1) or 1)
+        if pretraining_tp > 1:
+            vocab_size = int(getattr(cfg, "vocab_size", lm_head.weight.shape[0]))
+            lm_head_slices = lm_head.weight.split(vocab_size // pretraining_tp, dim=0)
+            logits_chunks = [F.linear(hidden_for_logits, lm_head_slice) for lm_head_slice in lm_head_slices]
+            logits = torch.cat(logits_chunks, dim=-1).squeeze(0).to(dtype=torch.float32)
+        else:
+            logits = lm_head(hidden_for_logits).squeeze(0).to(dtype=torch.float32)
         k = min(int(top_k), int(logits.shape[0]))
         top_vals, top_ids = torch.topk(logits, k=k)
 

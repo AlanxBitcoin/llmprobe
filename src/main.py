@@ -48,7 +48,12 @@ from src.probes.attribute_probe import (
     predict_word_attributes,
 )
 from src.runtime_api import start_llama_api
-from src.study import run_attribute_probe_study, run_linear_probe_study, run_single_word_hidden_state_study
+from src.study import (
+    run_attribute_probe_study,
+    run_linear_probe_study,
+    run_single_word_hidden_state_study,
+    run_single_word_top_100_neurons_study,
+)
 from src.utils.extract_hidden import preload_hidden_store, preload_hidden_store_from_disk
 from src.utils.token_hidden_store import build_store_for_protocol
 from src.utils.utils import write_json
@@ -113,6 +118,14 @@ def build_parser() -> argparse.ArgumentParser:
         help="Compute and return full hidden-state matrix (embedding + layers) for one word",
     )
     hidden_map.add_argument("word", help="Bare English word")
+
+    top100 = subparsers.add_parser(
+        "run-single-word-top-100-neurons",
+        help="Single-word study: heatmap + baseline top15 logits + penultimate-top100 intervention top15 logits",
+    )
+    top100.add_argument("word", help="Bare English word")
+    top100.add_argument("--top-k-neurons", type=int, default=100, help="Keep abs top-K neurons at intervention layer")
+    top100.add_argument("--intervention-layer", type=int, default=30, help="Decoder layer index to intervene (default: 30)")
 
     combo = subparsers.add_parser("run-word-sum", help="Analyze the layer-8 summed representation of two or more words")
     combo.add_argument("words", nargs="+", help="Two or more bare English words")
@@ -221,6 +234,16 @@ def _execute_parsed_args(args: argparse.Namespace, config: dict[str, Any]) -> di
             word=args.word,
             config=config,
             config_path=args.config,
+        )
+        return {"hidden_state_heatmap": heatmap}
+
+    if args.command == "run-single-word-top-100-neurons":
+        heatmap = run_single_word_top_100_neurons_study(
+            word=args.word,
+            config=config,
+            config_path=args.config,
+            top_k_neurons=int(args.top_k_neurons),
+            intervention_layer=int(args.intervention_layer),
         )
         return {"hidden_state_heatmap": heatmap}
 

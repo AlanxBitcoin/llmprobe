@@ -4,7 +4,12 @@ from __future__ import annotations
 # - Provide stable probe-layer exports for upper-layer imports.
 
 from .linear_probe import build_probe_dataset, export_probe_results, load_labeled_words, train_linear_probe
-from .single_word_hidden_state_probe import fetch_single_word_hidden_state, rank_last_layer_logits_from_heatmap
+from .single_word_hidden_state_probe import (
+    fetch_single_word_hidden_state,
+    rank_last_layer_logits_from_heatmap,
+    rank_logits_after_penultimate_topk_intervention,
+    run_starting_from_middle_layer_probe,
+)
 
 __all__ = [
     "build_probe_dataset",
@@ -12,5 +17,7 @@ __all__ = [
     "fetch_single_word_hidden_state",
     "load_labeled_words",
     "rank_last_layer_logits_from_heatmap",
+    "rank_logits_after_penultimate_topk_intervention",
+    "run_starting_from_middle_layer_probe",
     "train_linear_probe",
 ]

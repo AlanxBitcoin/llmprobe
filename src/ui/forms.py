@@ -14,6 +14,11 @@ FORM_SCHEMAS: dict[str, list[dict[str, Any]]] = {
     "single_word_hidden_state_form": [
         {"name": "word", "label": "Word", "type": "text", "default": "apple", "required": True},
     ],
+    "single_word_top_100_neurons_form": [
+        {"name": "word", "label": "Word", "type": "text", "default": "apple", "required": True},
+        {"name": "top_k_neurons", "label": "Top K Neurons", "type": "number", "default": 100, "min": 1},
+        {"name": "intervention_layer", "label": "Intervention Layer", "type": "number", "default": 30, "min": 0},
+    ],
     "color_words_form": [
         {"name": "word_file", "label": "Word file", "type": "text", "default": "data/color_words.txt"},
         {"name": "run_name", "label": "Run name", "type": "text", "default": "color_words"},

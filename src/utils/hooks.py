@@ -34,6 +34,8 @@ import torch
 from torch import nn
 from typing import Any, Dict, List, Optional, Tuple, Union, Callable
 from collections import defaultdict
+from types import SimpleNamespace
+import inspect
 
 class HiddenStateHook:
     """Manager for extracting hidden states from model layers."""
@@ -749,3 +751,173 @@ def compare_neuron_parameters(model, layer_idx: int, neuron_idx: Optional[int] =
     monitor.remove_all_hooks()
     
     return result
+
+
+def starting_from_middle_layer(
+    model,
+    *,
+    start_layer_idx: int,
+    hidden_state: torch.Tensor,
+    input_ids: torch.Tensor,
+    attention_mask: Optional[torch.Tensor] = None,
+    output_hidden_states: bool = True,
+    return_dict: bool = True,
+    **forward_kwargs,
+) -> Dict[str, Any]:
+    """
+    Continue forward by directly running remaining layers from a middle hidden state.
+
+    Practical implementation:
+    - Treat `hidden_state` as the output of `start_layer_idx`.
+    - Directly run layers (start_layer_idx + 1 .. end) in order.
+    - No full-model re-run, and no front-half attention recomputation.
+
+    Args:
+        model: Causal LM model (e.g., LlamaForCausalLM).
+        start_layer_idx: Decoder layer index to inject hidden state into.
+        hidden_state: Replacement hidden state. Supported shapes:
+            [hidden_dim], [seq_len, hidden_dim], [batch, seq_len, hidden_dim].
+        input_ids: Input token ids [batch, seq_len] used for the forward call.
+        attention_mask: Optional attention mask.
+        output_hidden_states: Whether to include hidden states in output.
+        return_dict: Whether model forward returns a dict-like object.
+        **forward_kwargs: Extra kwargs passed to model forward.
+
+    Returns:
+        Dict with keys:
+            - outputs: raw model outputs
+            - logits: output logits tensor (if available)
+            - remaining_hidden_states: hidden states after the injected layer
+            - start_layer_idx: injected layer index
+    """
+    base_model = getattr(model, "model", None)
+    layers = getattr(base_model, "layers", None)
+    if layers is None:
+        layers = getattr(model, "layers", None)
+    if layers is None:
+        raise ValueError("Model does not expose decoder layers via `model.layers` or `layers`.")
+
+    num_layers = len(layers)
+    if not (0 <= int(start_layer_idx) < num_layers):
+        raise ValueError(f"start_layer_idx out of range: {start_layer_idx}, num_layers={num_layers}")
+
+    current_hidden = _coerce_hidden_tensor(
+        hidden_state=hidden_state,
+        input_ids=input_ids,
+        model=model,
+    )
+    collected_hidden_states: list[torch.Tensor] = [current_hidden]
+
+    with torch.no_grad():
+        batch_size = int(current_hidden.shape[0])
+        seq_len = int(current_hidden.shape[1])
+        device = current_hidden.device
+        position_ids = torch.arange(seq_len, device=device, dtype=torch.long).unsqueeze(0).expand(batch_size, -1)
+        cache_position = torch.arange(seq_len, device=device, dtype=torch.long)
+        rotary = getattr(base_model, "rotary_emb", None) if base_model is not None else None
+        position_embeddings = None
+        if rotary is not None:
+            try:
+                position_embeddings = rotary(current_hidden, position_ids)
+            except TypeError:
+                position_embeddings = rotary(current_hidden, position_ids=position_ids)
+
+        for layer_idx in range(int(start_layer_idx) + 1, num_layers):
+            layer = layers[layer_idx]
+            candidate_kwargs = {
+                "hidden_states": current_hidden,
+                "attention_mask": attention_mask,
+                "position_ids": position_ids,
+                "past_key_value": None,
+                "output_attentions": False,
+                "use_cache": False,
+                "cache_position": cache_position,
+                "position_embeddings": position_embeddings,
+            }
+            sig = inspect.signature(layer.forward)
+            accepted = set(sig.parameters.keys())
+            layer_kwargs = {k: v for k, v in candidate_kwargs.items() if k in accepted}
+            layer_out = layer(**layer_kwargs)
+
+            if isinstance(layer_out, tuple):
+                current_hidden = layer_out[0]
+            else:
+                current_hidden = layer_out
+            if not isinstance(current_hidden, torch.Tensor):
+                raise ValueError(f"Layer {layer_idx} did not return hidden states tensor")
+            collected_hidden_states.append(current_hidden)
+
+        # Llama-style final norm before lm_head.
+        base_model_norm = getattr(base_model, "norm", None) if base_model is not None else None
+        hidden_for_logits = base_model_norm(current_hidden) if base_model_norm is not None else current_hidden
+
+        lm_head = getattr(model, "lm_head", None)
+        logits = lm_head(hidden_for_logits) if lm_head is not None else None
+
+    # Keep output hidden-state semantics aligned with HF model outputs:
+    # final hidden state should be after final norm.
+    if collected_hidden_states:
+        collected_hidden_states[-1] = hidden_for_logits
+    remaining = tuple(collected_hidden_states[1:]) if len(collected_hidden_states) > 1 else tuple()
+    outputs = SimpleNamespace(
+        hidden_states=tuple(collected_hidden_states),
+        logits=logits,
+    )
+
+    return {
+        "outputs": outputs,
+        "logits": logits,
+        "remaining_hidden_states": remaining,
+        "start_layer_idx": int(start_layer_idx),
+    }
+
+
+def _coerce_hidden_tensor(hidden_state: torch.Tensor, input_ids: torch.Tensor, model) -> torch.Tensor:
+    """Normalize hidden state to [B, S, D] on model device/dtype."""
+    device = next(model.parameters()).device
+    dtype = next(model.parameters()).dtype
+    replacement = hidden_state.to(device=device, dtype=dtype)
+
+    if replacement.ndim == 3:
+        return replacement
+    if replacement.ndim == 2:
+        return replacement.unsqueeze(0)
+    if replacement.ndim == 1:
+        # Last-token vector only; build a single-step sequence.
+        return replacement.view(1, 1, -1)
+    raise ValueError(f"Unsupported hidden_state ndim={replacement.ndim}, expected 1/2/3")
+
+
+def _patch_hidden_tensor(current_hidden: torch.Tensor, replacement_hidden: torch.Tensor) -> torch.Tensor:
+    """Patch current hidden tensor [B, S, D] with replacement hidden state."""
+    replacement = replacement_hidden.to(device=current_hidden.device, dtype=current_hidden.dtype)
+    patched = current_hidden.clone()
+
+    if replacement.ndim == 1:
+        if replacement.shape[0] != patched.shape[-1]:
+            raise ValueError(
+                f"Hidden size mismatch for 1D replacement: expected {patched.shape[-1]}, got {replacement.shape[0]}"
+            )
+        patched[:, -1, :] = replacement.unsqueeze(0)
+        return patched
+
+    if replacement.ndim == 2:
+        if replacement.shape[-1] != patched.shape[-1]:
+            raise ValueError(
+                f"Hidden size mismatch for 2D replacement: expected {patched.shape[-1]}, got {replacement.shape[-1]}"
+            )
+        seq_len = min(patched.shape[1], replacement.shape[0])
+        patched[:, :seq_len, :] = replacement[:seq_len, :].unsqueeze(0)
+        return patched
+
+    if replacement.ndim == 3:
+        if replacement.shape[-1] != patched.shape[-1]:
+            raise ValueError(
+                f"Hidden size mismatch for 3D replacement: expected {patched.shape[-1]}, got {replacement.shape[-1]}"
+            )
+        batch = min(patched.shape[0], replacement.shape[0])
+        seq_len = min(patched.shape[1], replacement.shape[1])
+        patched[:batch, :seq_len, :] = replacement[:batch, :seq_len, :]
+        return patched
+
+    raise ValueError(f"Unsupported replacement hidden_state ndim={replacement.ndim}, expected 1/2/3")
