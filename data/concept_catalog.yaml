@@ -1,0 +1,75 @@
+types:
+  category:
+    - fruit
+    - animal
+    - food
+    - tool
+    - vehicle
+    - object
+    - material
+    - action
+    - emotion
+  color:
+    - red
+    - blue
+    - green
+    - yellow
+    - black
+    - white
+    - brown
+    - pink
+    - colorful
+    - bright
+    - dark
+  shape:
+    - round
+    - roundish
+    - square
+    - triangle
+    - sphere
+    - ring
+    - curve
+    - sharp
+  taste:
+    - sweet
+    - sour
+    - delicious
+    - juicy
+    - edible
+  texture:
+    - soft
+    - hard
+    - smooth
+    - rough
+    - wet
+    - dry
+    - solid
+    - liquid
+  size:
+    - small
+    - large
+  temperature:
+    - cold
+    - hot
+  sound:
+    - quiet
+    - loud
+  material:
+    - metal
+    - wood
+    - glass
+    - stone
+    - paper
+    - plastic
+  motion:
+    - moving
+    - fast
+    - slow
+  life:
+    - living
+    - useful
+  emotion:
+    - happy
+    - sad
+    - angry
+    - calm

@@ -1,0 +1,140 @@
+【项目整理步骤】
+
+由于环境限制，项目整理需要手动执行或通过以下方法之一完成：
+
+## 方法1：运行自动化脚本（推荐）
+
+在项目根目录打开命令行/PowerShell，执行：
+
+```powershell
+python run_migration.py
+```
+
+或快速版本：
+
+```powershell
+python quick_organize.py
+```
+
+## 方法2：手动执行（如自动脚本失败）
+
+### 第1步：创建目录结构
+
+在项目根目录创建以下目录：
+- scripts/
+- scripts/analysis/
+- scripts/experiments/
+- scripts/utils/
+- tests/
+
+使用CMD：
+```cmd
+mkdir scripts\analysis
+mkdir scripts\experiments
+mkdir scripts\utils
+mkdir tests
+```
+
+### 第2步：创建__init__.py文件
+
+在以下目录中创建空的 __init__.py 文件：
+- scripts/__init__.py
+- scripts/analysis/__init__.py
+- scripts/experiments/__init__.py
+- scripts/utils/__init__.py
+- tests/__init__.py
+
+### 第3步：移动分析脚本
+
+将以下文件从根目录移动到 scripts/analysis/ ：
+
+analyze_dims.py
+analyze_skip_results.py
+apple_desktop_probe.py
+compare_embedding_layer8.py
+embed_sum_probe.py
+embed_to_logits.py
+head_ablation_probe.py
+inject_layer8_at24.py
+layer_similarity_probe.py
+layer_skip_probe.py
+logits_from_layer8.py
+query_embedding.py
+rain_analytic_inv.py
+rain_analytic_inv2.py
+rain_backproject.py
+rain_backprop_layer35.py
+show_head_top10.py
+
+### 第4步：移动实验脚本
+
+将以下文件从根目录移动到 scripts/experiments/ ：
+
+run_experiments.py
+run_shuffled_experiments.py
+save_neuron.py
+
+### 第5步：移动工具脚本
+
+将以下文件从根目录移动到 scripts/utils/ ：
+
+generate_report.py
+generate_report_cn.py
+generate_multi_report.py
+generate_shuffle_report.py
+
+### 第6步：移动tools目录中的脚本
+
+将以下文件从 tools/ 移动到 scripts/utils/ ：
+
+tools/analyze_command_word_layers.py
+tools/analyze_sequence_word_layers.py
+tools/format_deep_interpretation_docx.py
+tools/generate_comprehensive_perception_report.py
+tools/render_command_diff_charts.py
+tools/render_full_4096_charts.py
+
+### 第7步：移动测试文件
+
+将以下文件从根目录移动到 tests/ ：
+
+test.py
+test1.py
+
+### 第8步：清理
+
+删除空的 tools/ 目录（可选）
+
+## 验证整理成果
+
+完成整理后，根目录应该包含：
+
+✓ src/          （核心库 - 无变化）
+✓ scripts/      （新目录，包含 analysis/, experiments/, utils/）
+✓ tests/        （新目录，包含 test.py, test1.py）
+✓ configs/      （配置文件 - 无变化）
+✓ data/         （数据目录 - 无变化）
+✓ outputs/      （输出目录 - 无变化）
+✓ main.py       （主入口 - 保持在根目录）
+✓ requirements.txt
+✓ README.md
+
+使用以下命令验证整理：
+
+python main.py --help
+
+## 整理完成后的结构
+
+probe/
+├── src/                         # 核心库
+├── scripts/
+│   ├── analysis/               # 分析脚本
+│   ├── experiments/            # 实验脚本
+│   └── utils/                  # 工具脚本
+├── tests/                      # 测试文件
+├── configs/                    # 配置
+├── data/                       # 数据
+├── outputs/                    # 输出
+└── main.py                     # 主入口
+
+祝整理顺利！

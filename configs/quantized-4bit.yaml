@@ -1,0 +1,32 @@
+model:
+  model_name_or_path: "C:/AI_Model/Llama3_8B_Instruct"
+  tokenizer_name_or_path: null
+  device_map: "auto"
+  torch_dtype: "float16"
+  load_in_4bit: true
+  load_in_8bit: false
+  trust_remote_code: true
+
+analysis:
+  target_layer: 8
+  top_k_dims: 24
+  top_k_concepts: 8
+  max_multi_word_group: 3
+  aggregation: "mean_abs"
+
+input:
+  word_file: "data/word_list_100.txt"
+
+output:
+  base_dir: "data/outputs"
+  save_json: true
+  save_plots: true
+
+video:
+  enabled: true
+  fps: 2
+  codec: "libx264"
+
+visualization:
+  figure_dpi: 160
+  cmap: "magma"

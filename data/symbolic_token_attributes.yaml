@@ -1,0 +1,471 @@
+tokens:
+  ".":
+    token_class: english_punctuation
+    token family: punctuation
+    punctuation role: sentence end
+    symbol shape: terminal
+    symbol name: full stop
+  ",":
+    token_class: english_punctuation
+    token family: punctuation
+    punctuation role: separator
+    symbol shape: terminal
+    symbol name: comma
+  "?":
+    token_class: english_punctuation
+    token family: punctuation
+    punctuation role: sentence end
+    symbol shape: terminal
+    symbol name: question mark
+  "!":
+    token_class: english_punctuation
+    token family: punctuation
+    punctuation role: emphasis
+    symbol shape: terminal
+    symbol name: exclamation mark
+  ":":
+    token_class: english_punctuation
+    token family: punctuation
+    punctuation role: separator
+    symbol shape: terminal
+    symbol name: colon
+  ";":
+    token_class: english_punctuation
+    token family: punctuation
+    punctuation role: pause
+    symbol shape: terminal
+    symbol name: semicolon
+  "'":
+    token_class: english_punctuation
+    token family: punctuation
+    punctuation role: quote
+    symbol shape: paired
+    symbol name: apostrophe
+  '"':
+    token_class: english_punctuation
+    token family: punctuation
+    punctuation role: quote
+    symbol shape: paired
+    symbol name: double quote
+  "(":
+    token_class: english_punctuation
+    token family: punctuation
+    punctuation role: bracket
+    symbol shape: paired
+    symbol name: left parenthesis
+  ")":
+    token_class: english_punctuation
+    token family: punctuation
+    punctuation role: bracket
+    symbol shape: paired
+    symbol name: right parenthesis
+  "[":
+    token_class: english_punctuation
+    token family: punctuation
+    punctuation role: bracket
+    symbol shape: paired
+    symbol name: left bracket
+  "]":
+    token_class: english_punctuation
+    token family: punctuation
+    punctuation role: bracket
+    symbol shape: paired
+    symbol name: right bracket
+  "{":
+    token_class: english_punctuation
+    token family: punctuation
+    punctuation role: bracket
+    symbol shape: paired
+    symbol name: left brace
+  "}":
+    token_class: english_punctuation
+    token family: punctuation
+    punctuation role: bracket
+    symbol shape: paired
+    symbol name: right brace
+  "-":
+    token_class: english_punctuation
+    token family: punctuation
+    punctuation role: connector
+    symbol shape: operator
+    symbol name: hyphen
+  "_":
+    token_class: english_punctuation
+    token family: punctuation
+    punctuation role: connector
+    symbol shape: operator
+    symbol name: underscore
+  "/":
+    token_class: english_punctuation
+    token family: punctuation
+    punctuation role: separator
+    symbol shape: operator
+    symbol name: slash
+  "\\":
+    token_class: english_punctuation
+    token family: punctuation
+    punctuation role: escape
+    symbol shape: operator
+    symbol name: backslash
+  "&":
+    token_class: english_punctuation
+    token family: punctuation
+    punctuation role: connector
+    symbol shape: operator
+    symbol name: ampersand
+  "@":
+    token_class: english_punctuation
+    token family: punctuation
+    punctuation role: emphasis
+    symbol shape: operator
+    symbol name: at sign
+  "#":
+    token_class: english_punctuation
+    token family: punctuation
+    punctuation role: emphasis
+    symbol shape: operator
+    symbol name: hash sign
+  "$":
+    token_class: english_punctuation
+    token family: punctuation
+    punctuation role: operator
+    symbol shape: terminal
+    symbol name: dollar sign
+  "%":
+    token_class: english_punctuation
+    token family: punctuation
+    punctuation role: operator
+    symbol shape: terminal
+    symbol name: percent sign
+  "*":
+    token_class: english_punctuation
+    token family: punctuation
+    punctuation role: emphasis
+    symbol shape: operator
+    symbol name: asterisk
+  "+":
+    token_class: english_punctuation
+    token family: punctuation
+    punctuation role: operator
+    symbol shape: operator
+    symbol name: plus sign
+  "=":
+    token_class: english_punctuation
+    token family: punctuation
+    punctuation role: operator
+    symbol shape: operator
+    symbol name: equals sign
+  "<":
+    token_class: english_punctuation
+    token family: punctuation
+    punctuation role: bracket
+    symbol shape: paired
+    symbol name: less than sign
+  ">":
+    token_class: english_punctuation
+    token family: punctuation
+    punctuation role: bracket
+    symbol shape: paired
+    symbol name: greater than sign
+  "|":
+    token_class: english_punctuation
+    token family: punctuation
+    punctuation role: separator
+    symbol shape: terminal
+    symbol name: vertical bar
+  "~":
+    token_class: english_punctuation
+    token family: punctuation
+    punctuation role: operator
+    symbol shape: terminal
+    symbol name: tilde
+  "`":
+    token_class: english_punctuation
+    token family: punctuation
+    punctuation role: quote
+    symbol shape: paired
+    symbol name: backtick
+  "...":
+    token_class: english_punctuation
+    token family: punctuation
+    punctuation role: continuation
+    symbol shape: repeated
+    symbol name: ellipsis
+  "。":
+    token_class: chinese_punctuation
+    token family: punctuation
+    punctuation role: sentence end
+    symbol shape: terminal
+    symbol name: ideographic full stop
+  "，":
+    token_class: chinese_punctuation
+    token family: punctuation
+    punctuation role: separator
+    symbol shape: terminal
+    symbol name: fullwidth comma
+  "、":
+    token_class: chinese_punctuation
+    token family: punctuation
+    punctuation role: separator
+    symbol shape: terminal
+    symbol name: enumeration comma
+  "？":
+    token_class: chinese_punctuation
+    token family: punctuation
+    punctuation role: sentence end
+    symbol shape: terminal
+    symbol name: question mark
+  "！":
+    token_class: chinese_punctuation
+    token family: punctuation
+    punctuation role: emphasis
+    symbol shape: terminal
+    symbol name: exclamation mark
+  "：":
+    token_class: chinese_punctuation
+    token family: punctuation
+    punctuation role: separator
+    symbol shape: terminal
+    symbol name: colon
+  "；":
+    token_class: chinese_punctuation
+    token family: punctuation
+    punctuation role: pause
+    symbol shape: terminal
+    symbol name: semicolon
+  "“":
+    token_class: chinese_punctuation
+    token family: punctuation
+    punctuation role: quote
+    symbol shape: paired
+    symbol name: left double quote
+  "”":
+    token_class: chinese_punctuation
+    token family: punctuation
+    punctuation role: quote
+    symbol shape: paired
+    symbol name: right double quote
+  "‘":
+    token_class: chinese_punctuation
+    token family: punctuation
+    punctuation role: quote
+    symbol shape: paired
+    symbol name: left single quote
+  "’":
+    token_class: chinese_punctuation
+    token family: punctuation
+    punctuation role: quote
+    symbol shape: paired
+    symbol name: right single quote
+  "（":
+    token_class: chinese_punctuation
+    token family: punctuation
+    punctuation role: bracket
+    symbol shape: paired
+    symbol name: left fullwidth parenthesis
+  "）":
+    token_class: chinese_punctuation
+    token family: punctuation
+    punctuation role: bracket
+    symbol shape: paired
+    symbol name: right fullwidth parenthesis
+  "【":
+    token_class: chinese_punctuation
+    token family: punctuation
+    punctuation role: bracket
+    symbol shape: paired
+    symbol name: left lenticular bracket
+  "】":
+    token_class: chinese_punctuation
+    token family: punctuation
+    punctuation role: bracket
+    symbol shape: paired
+    symbol name: right lenticular bracket
+  "《":
+    token_class: chinese_punctuation
+    token family: punctuation
+    punctuation role: enclosure
+    symbol shape: paired
+    symbol name: left double angle bracket
+  "》":
+    token_class: chinese_punctuation
+    token family: punctuation
+    punctuation role: enclosure
+    symbol shape: paired
+    symbol name: right double angle bracket
+  "〈":
+    token_class: chinese_punctuation
+    token family: punctuation
+    punctuation role: enclosure
+    symbol shape: paired
+    symbol name: left angle bracket
+  "〉":
+    token_class: chinese_punctuation
+    token family: punctuation
+    punctuation role: enclosure
+    symbol shape: paired
+    symbol name: right angle bracket
+  "——":
+    token_class: chinese_punctuation
+    token family: punctuation
+    punctuation role: connector
+    symbol shape: multi-char
+    symbol name: em dash
+  "……":
+    token_class: chinese_punctuation
+    token family: punctuation
+    punctuation role: continuation
+    symbol shape: repeated
+    symbol name: ellipsis
+  "·":
+    token_class: chinese_punctuation
+    token family: punctuation
+    punctuation role: separator
+    symbol shape: terminal
+    symbol name: middle dot
+  "￥":
+    token_class: chinese_punctuation
+    token family: punctuation
+    punctuation role: operator
+    symbol shape: terminal
+    symbol name: yen sign
+  "0":
+    token_class: arabic_digit
+    token family: digit
+    digit family: arabic
+    digit value: "0"
+    symbol shape: single
+    symbol name: digit zero
+  "1":
+    token_class: arabic_digit
+    token family: digit
+    digit family: arabic
+    digit value: "1"
+    symbol shape: single
+    symbol name: digit one
+  "2":
+    token_class: arabic_digit
+    token family: digit
+    digit family: arabic
+    digit value: "2"
+    symbol shape: single
+    symbol name: digit two
+  "3":
+    token_class: arabic_digit
+    token family: digit
+    digit family: arabic
+    digit value: "3"
+    symbol shape: single
+    symbol name: digit three
+  "4":
+    token_class: arabic_digit
+    token family: digit
+    digit family: arabic
+    digit value: "4"
+    symbol shape: single
+    symbol name: digit four
+  "5":
+    token_class: arabic_digit
+    token family: digit
+    digit family: arabic
+    digit value: "5"
+    symbol shape: single
+    symbol name: digit five
+  "6":
+    token_class: arabic_digit
+    token family: digit
+    digit family: arabic
+    digit value: "6"
+    symbol shape: single
+    symbol name: digit six
+  "7":
+    token_class: arabic_digit
+    token family: digit
+    digit family: arabic
+    digit value: "7"
+    symbol shape: single
+    symbol name: digit seven
+  "8":
+    token_class: arabic_digit
+    token family: digit
+    digit family: arabic
+    digit value: "8"
+    symbol shape: single
+    symbol name: digit eight
+  "9":
+    token_class: arabic_digit
+    token family: digit
+    digit family: arabic
+    digit value: "9"
+    symbol shape: single
+    symbol name: digit nine
+  "N":
+    token_class: roman_digit
+    token family: digit
+    digit family: roman
+    digit value: "0"
+    symbol shape: single
+    symbol name: roman nulla
+  "I":
+    token_class: roman_digit
+    token family: digit
+    digit family: roman
+    digit value: "1"
+    symbol shape: single
+    symbol name: roman one
+  "II":
+    token_class: roman_digit
+    token family: digit
+    digit family: roman
+    digit value: "2"
+    symbol shape: multi-char
+    symbol name: roman two
+  "III":
+    token_class: roman_digit
+    token family: digit
+    digit family: roman
+    digit value: "3"
+    symbol shape: multi-char
+    symbol name: roman three
+  "IV":
+    token_class: roman_digit
+    token family: digit
+    digit family: roman
+    digit value: "4"
+    symbol shape: multi-char
+    symbol name: roman four
+  "V":
+    token_class: roman_digit
+    token family: digit
+    digit family: roman
+    digit value: "5"
+    symbol shape: single
+    symbol name: roman five
+  "VI":
+    token_class: roman_digit
+    token family: digit
+    digit family: roman
+    digit value: "6"
+    symbol shape: multi-char
+    symbol name: roman six
+  "VII":
+    token_class: roman_digit
+    token family: digit
+    digit family: roman
+    digit value: "7"
+    symbol shape: multi-char
+    symbol name: roman seven
+  "VIII":
+    token_class: roman_digit
+    token family: digit
+    digit family: roman
+    digit value: "8"
+    symbol shape: multi-char
+    symbol name: roman eight
+  "IX":
+    token_class: roman_digit
+    token family: digit
+    digit family: roman
+    digit value: "9"
+    symbol shape: multi-char
+    symbol name: roman nine

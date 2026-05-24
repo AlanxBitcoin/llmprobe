@@ -1,0 +1,33 @@
+# 基础配置 - 所有probe共享的模型和通用参数
+# 其他配置文件会继承这些参数
+
+model:
+  model_name_or_path: "C:/AI_Model/Llama3_8B_Instruct"
+  tokenizer_name_or_path: null
+  device_map: "auto"
+  torch_dtype: "bfloat16"
+  load_in_4bit: false
+  load_in_8bit: false
+  trust_remote_code: true
+
+# 通用分析参数
+analysis:
+  target_layer: 8
+  aggregation: "mean_abs"
+
+# 通用输出参数
+output:
+  base_dir: "data/outputs"
+  save_json: true
+  save_plots: true
+
+# 视频参数
+video:
+  enabled: true
+  fps: 2
+  codec: "libx264"
+
+# 可视化参数
+visualization:
+  figure_dpi: 160
+  cmap: "magma"

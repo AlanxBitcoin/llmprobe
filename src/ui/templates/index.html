@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>LLM Probe UI</title>
+    <link rel="stylesheet" href="/static/app.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <header class="topbar">
+        <div>
+          <h1>LLM Probe</h1>
+          <p>Local study runner</p>
+        </div>
+        <div class="status" id="serverStatus">Ready</div>
+      </header>
+
+      <main class="workspace">
+        <aside class="actions-pane">
+          <div class="pane-title">Study / Probe</div>
+          <div id="actionsList" class="actions-list"></div>
+        </aside>
+
+        <section class="form-pane">
+          <div class="pane-title">Parameters</div>
+          <h2 id="actionTitle">Select an action</h2>
+          <p id="actionDescription" class="muted"></p>
+          <form id="paramsForm" class="params-form"></form>
+          <button id="runButton" class="primary-button" type="button" disabled>Run Study</button>
+          <pre id="commandPreview" class="command-preview"></pre>
+        </section>
+
+        <section class="result-pane">
+          <div class="pane-title">Results</div>
+          <div class="result-toolbar">
+            <button id="showCsvButton" type="button" disabled>CSV</button>
+            <button id="histogramButton" type="button" disabled>Histogram</button>
+            <button id="colorMapButton" type="button" disabled>Color Map</button>
+          </div>
+          <div id="resultSummary" class="result-summary"></div>
+          <div id="csvContainer" class="csv-container"></div>
+          <div id="artifactList" class="artifact-list"></div>
+        </section>
+      </main>
+
+      <section class="charts-section">
+        <div class="pane-title">Generated Charts</div>
+        <div id="chartsContainer" class="charts-container"></div>
+      </section>
+    </div>
+
+    <script src="/static/app.js"></script>
+  </body>
+</html>

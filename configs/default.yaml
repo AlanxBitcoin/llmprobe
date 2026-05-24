@@ -1,0 +1,67 @@
+model:
+  model_name_or_path: "C:/AI_Model/Llama3_8B_Instruct"
+  tokenizer_name_or_path: null
+  device_map: "auto"
+  torch_dtype: "bfloat16"
+  load_in_4bit: false
+  load_in_8bit: false
+  trust_remote_code: true
+
+analysis:
+  target_layer: 8
+  top_k_dims: 24
+  top_k_concepts: 8
+  max_multi_word_group: 3
+  aggregation: "mean_abs"
+  # 报告中的 top-k 参数
+  top_k_words_per_dim: 8              # 维度报告中每个维度显示的词数
+  top_k_predictions: 5                # 属性预测的 top-k 候选数
+  top_k_concepts_per_axis: 5          # 维度解释中的概念数
+
+input:
+  word_file: "data/word_list_100.txt"
+  attribute_file: "data/word_attributes.csv"
+
+output:
+  base_dir: "data/outputs"
+  save_json: true
+  save_plots: true
+
+video:
+  enabled: true
+  fps: 2
+  codec: "libx264"
+
+visualization:
+  figure_dpi: 160
+  cmap: "magma"
+
+# 机器学习模型训练参数
+probe:
+  # 线性探针参数
+  linear_probe:
+    random_state: 42
+    test_size: 0.2                    # 测试集比例
+    solver: "lbfgs"
+    max_iter: 3000
+
+  # 属性探针参数
+  attribute_probe:
+    random_state: 42
+    solver: "lbfgs"
+    max_iter: 3000
+    test_size_ratio: 0.25             # 测试集比例（动态计算）
+    min_class_count: 2                # 每个类最少样本数
+    min_total_samples: 8              # 属性最少总样本数
+    min_unique_classes: 2             # 属性最少类别数
+
+# 预处理和分析参数
+preprocess:
+  min_label_count_attr_probe: 2       # 属性探针的标签最小出现次数
+
+# 维度报告参数
+report:
+  top_positive_words: 8               # 维度报告中正向前 N 个词
+  top_negative_words: 8               # 维度报告中负向前 N 个词
+  largest_lists_limit: 12             # 全局分析中显示的最大列表数
+  review_candidates_limit: 12         # 审查候选的限制数量

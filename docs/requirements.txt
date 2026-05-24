@@ -1,0 +1,13 @@
+torch
+transformers
+accelerate
+bitsandbytes
+scikit-learn
+sentencepiece
+pyyaml
+numpy
+matplotlib
+seaborn
+networkx
+imageio
+imageio-ffmpeg

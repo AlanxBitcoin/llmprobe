@@ -1,0 +1,4 @@
+.mplconfig/
+outputs/
+__pycache__/
+*.pyc

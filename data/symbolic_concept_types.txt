@@ -1,0 +1,6 @@
+token family
+punctuation role
+digit family
+digit value
+symbol shape
+symbol name
