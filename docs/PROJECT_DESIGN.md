@@ -1,16 +1,17 @@
 # LLM Probe 项目全局设计文档
 
-**版本**: 1.10
+**版本**: 1.11
 **最后更新**: 2026-05-24
 **作用**: 项目的单一真实来源 (Single Source of Truth)
 **使用说明**: 修改项目时，先修改此文档，然后根据此文档的要求修改代码
 
-**本次更新 (v1.10)**:
+**本次更新 (v1.11)**:
 - ✅ 确认 `outputs/` 文件夹位置：从项目根目录迁移到 `data/outputs/`
 - ✅ 统一输出路径管理：所有输出结果统一存放在 `data/outputs/` 下
 - 🔄 代码路径收尾：补齐剩余硬编码路径（`scripts/analysis/analyze_dims.py`、`scripts/analysis/analyze_skip_results.py`、`scripts/analysis/show_head_top10.py`、`scripts/analysis/layer_skip_probe.py`）
 - ✅ 完成判定：Python 代码中不再使用旧文件系统路径 `outputs/...`（`/outputs/...` URL 路由与历史文档示例除外）
 - 🔄 目录规范收尾：入口与模型操作文件统一在 `src/` 根目录，项目根目录不保留 `.py` 文件
+- 🔄 版本管理规范：`data/` 下所有文件和子目录默认不纳入 Git 版本管理（统一通过 `.gitignore` 忽略）
 
 ---
 
@@ -163,10 +164,11 @@ probe/
 
 ### 五层架构说明
 
-### 目录放置约束（v1.10）
+### 目录放置约束（v1.11）
 - `src/main.py` 是唯一应用入口文件位置。
 - `src/hooks.py` 是唯一模型操作层文件位置。
 - `probe/` 根目录不保留 `.py` 文件；如历史遗留了 `main.py`、`hooks.py`，应删除并仅保留 `src/` 下实现。
+- `data/` 目录是本地数据与实验产物目录，不纳入 Git；应在 `.gitignore` 中忽略 `data/**`。
 
 **项目采用五层分层架构，从下到上依次为**：
 
@@ -1378,6 +1380,7 @@ def freeze_layer(model, layer_indices):
 
 | 版本 | 日期 | 主要变更 |
 |------|------|---------|
+| 1.11 | 2026-05-24 | 增加版本管理约束：`data/` 全目录忽略，不纳入 Git 版本管理 |
 | 1.10 | 2026-05-24 | 明确目录规范：`src/main.py` 与 `src/hooks.py` 为唯一位置；`probe/` 根目录不保留 `.py` 文件 |
 | 1.9 | 2026-05-24 | 收尾 `outputs/` → `data/outputs/` 迁移：明确剩余待改脚本与完成判定标准（先改文档再改代码） |
 | 1.7 | 2026-05-24 | 将原第4层 `src/tests/` 研究脚本改名为 `src/study/`；新增 `src/test/` 作为真正的软件测试目录 |

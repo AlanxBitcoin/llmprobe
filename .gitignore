@@ -1,4 +1,4 @@
 .mplconfig/
-outputs/
+data/
 __pycache__/
 *.pyc
