@@ -16,6 +16,24 @@ FORM_SCHEMAS: dict[str, list[dict[str, Any]]] = {
         {"name": "include_bos", "label": "Include BOS", "type": "checkbox", "default": True},
         {"name": "include_assistant", "label": "Include Assistant", "type": "checkbox", "default": False},
     ],
+    "single_word_hidden_state_batch_average_form": [
+        {
+            "name": "batch_name",
+            "label": "Batch Name",
+            "type": "text",
+            "default": "",
+            "required": False,
+        },
+        {
+            "name": "words_csv",
+            "label": "Words (comma-separated)",
+            "type": "text",
+            "default": "apple, banana, orange",
+            "required": True,
+        },
+        {"name": "include_bos", "label": "Include BOS", "type": "checkbox", "default": True},
+        {"name": "include_assistant", "label": "Include Assistant", "type": "checkbox", "default": False},
+    ],
     "single_word_top_100_neurons_form": [
         {"name": "word", "label": "Word", "type": "text", "default": "apple", "required": True},
         {"name": "top_k_neurons", "label": "Top K Neurons", "type": "number", "default": 100, "min": 1},

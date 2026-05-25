@@ -42,6 +42,14 @@ UI_ACTIONS: dict[str, UIAction] = {
         command="run-single-word-hidden-state",
         form_schema="single_word_hidden_state_form",
     ),
+    "study_single_word_hidden_state_batch_average": UIAction(
+        id="study_single_word_hidden_state_batch_average",
+        label="Single Word Hidden State Batch Average",
+        description="Run comma-separated words, average hidden-state matrices element-wise, then show top15 logits.",
+        kind="study",
+        command="run-single-word-hidden-state-batch-average",
+        form_schema="single_word_hidden_state_batch_average_form",
+    ),
     "study_single_word_top_100_neurons": UIAction(
         id="study_single_word_top_100_neurons",
         label="Single Word Top 100 Neurons",
@@ -123,6 +131,19 @@ def build_command_args(action: UIAction, params: dict[str, Any]) -> list[str]:
         return [
             action.command,
             str(params.get("word") or "apple"),
+            "--include-bos",
+            "true" if include_bos_flag else "false",
+            "--include-assistant",
+            "true" if include_assistant_flag else "false",
+        ]
+    if action.command == "run-single-word-hidden-state-batch-average":
+        include_bos = params.get("include_bos")
+        include_bos_flag = bool(include_bos) if include_bos is not None else True
+        include_assistant = params.get("include_assistant")
+        include_assistant_flag = bool(include_assistant) if include_assistant is not None else False
+        return [
+            action.command,
+            str(params.get("words_csv") or "apple, banana, orange"),
             "--include-bos",
             "true" if include_bos_flag else "false",
             "--include-assistant",

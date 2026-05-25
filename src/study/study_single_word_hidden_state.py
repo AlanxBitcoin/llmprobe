@@ -53,6 +53,8 @@ def run_study(
 
     if not isinstance(heatmap, dict) or not heatmap.get("ok"):
         if isinstance(heatmap, dict):
+            if str(heatmap.get("reason") or "") == "single_token_required":
+                heatmap["offending_word"] = str(heatmap.get("word") or word)
             heatmap.setdefault("top_logits", [])
             heatmap.setdefault("logits_source", "none")
             heatmap.setdefault("logits_error", None)

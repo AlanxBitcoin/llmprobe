@@ -16,6 +16,9 @@ from pathlib import Path
 from typing import Any
 
 from src.main import run_cli_command
+from src.config import load_config
+from src.runtime_api import RuntimeRequest, get_runtime_api, start_llama_api
+import torch
 
 from .registry import build_command_args, get_ui_action, list_ui_actions
 from .result_render import collect_recent_artifacts, newest_csv_preview
@@ -25,8 +28,193 @@ _RUN_STATE: dict[str, Any] = {"action_id": None, "started_at": 0.0, "eta_seconds
 _ACTION_DURATION_SECONDS: dict[str, float] = {}
 
 
+def _batch_cache_path(project_root: Path) -> Path:
+    return (project_root / "data" / "cache" / "batch_words.json").resolve()
+
+
+def load_batch_cache(project_root: str | Path) -> dict[str, str]:
+    root = Path(project_root).resolve()
+    path = _batch_cache_path(root)
+    if not path.exists():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    out: dict[str, str] = {}
+    for k, v in data.items():
+        name = str(k).strip()
+        words_csv = str(v).strip()
+        if name and words_csv:
+            out[name] = words_csv
+    return out
+
+
+def save_batch_cache(project_root: str | Path, mapping: dict[str, str]) -> None:
+    root = Path(project_root).resolve()
+    path = _batch_cache_path(root)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {str(k): str(v) for k, v in mapping.items() if str(k).strip() and str(v).strip()}
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def upsert_batch_mapping(project_root: str | Path, *, batch_name: str, words_csv: str) -> None:
+    name = str(batch_name).strip()
+    words = str(words_csv).strip()
+    if not name or not words:
+        return
+    data = load_batch_cache(project_root)
+    data[name] = words
+    save_batch_cache(project_root, data)
+
+
+def batch_options_payload(project_root: str | Path) -> dict[str, Any]:
+    data = load_batch_cache(project_root)
+    items = [{"name": k, "words_csv": data[k]} for k in sorted(data.keys(), key=lambda x: x.lower())]
+    return {"batches": items}
+
+
 def actions_payload() -> dict[str, Any]:
     return {"actions": list_ui_actions()}
+
+
+def execute_chat_completion(
+    messages: list[dict[str, Any]] | None,
+    *,
+    config_path: str | Path,
+    max_new_tokens: int = 128,
+    temperature: float = 0.7,
+    top_p: float = 0.9,
+) -> dict[str, Any]:
+    """Run one chat turn against the currently loaded model bundle."""
+    started_at = time.time()
+    if not _RUN_LOCK.acquire(blocking=False):
+        running_for = max(0.0, time.time() - float(_RUN_STATE.get("started_at") or time.time()))
+        return {
+            "status": "busy",
+            "error": "Another task is running. Please wait for it to finish.",
+            "running_action_id": _RUN_STATE.get("action_id"),
+            "running_for_seconds": round(running_for, 1),
+            "started_at": started_at,
+            "finished_at": time.time(),
+        }
+
+    _RUN_STATE["action_id"] = "chat_completion"
+    _RUN_STATE["started_at"] = started_at
+    _RUN_STATE["eta_seconds"] = 30.0
+    try:
+        config = load_config(config_path)
+        try:
+            api = get_runtime_api()
+        except RuntimeError:
+            api = start_llama_api(config)
+
+        bundle = api.execute_model_call(RuntimeRequest(config=config, force_reload=False)).bundle
+        tokenizer = bundle.tokenizer
+        model = bundle.model
+
+        normalized: list[dict[str, str]] = []
+        for item in messages or []:
+            role = str((item or {}).get("role") or "").strip().lower()
+            content = str((item or {}).get("content") or "").strip()
+            if role not in {"system", "user", "assistant"} or not content:
+                continue
+            normalized.append({"role": role, "content": content})
+        if not normalized:
+            return {
+                "status": "error",
+                "error": "No valid chat messages were provided.",
+                "started_at": started_at,
+                "finished_at": time.time(),
+            }
+
+        chat_payload = tokenizer.apply_chat_template(
+            normalized,
+            tokenize=True,
+            add_generation_prompt=True,
+            return_tensors="pt",
+        )
+        if hasattr(chat_payload, "get"):
+            input_ids = chat_payload.get("input_ids")
+            attention_mask = chat_payload.get("attention_mask")
+        else:
+            input_ids = chat_payload
+            attention_mask = None
+        if input_ids is None:
+            raise ValueError("Tokenizer did not return input_ids for chat template")
+        if not torch.is_tensor(input_ids):
+            input_ids = torch.as_tensor(input_ids, dtype=torch.long)
+        if input_ids.ndim == 1:
+            input_ids = input_ids.unsqueeze(0)
+        if attention_mask is not None and not torch.is_tensor(attention_mask):
+            attention_mask = torch.as_tensor(attention_mask, dtype=torch.long)
+        if attention_mask is not None and attention_mask.ndim == 1:
+            attention_mask = attention_mask.unsqueeze(0)
+
+        device = next(model.parameters()).device
+        input_ids = input_ids.to(device=device, dtype=torch.long)
+        if attention_mask is not None:
+            attention_mask = attention_mask.to(device=device, dtype=torch.long)
+
+        safe_max_new_tokens = int(max(1, min(int(max_new_tokens), 1024)))
+        safe_temperature = float(temperature)
+        safe_top_p = float(top_p)
+        do_sample = safe_temperature > 0.0
+        if do_sample:
+            safe_temperature = max(0.05, min(safe_temperature, 5.0))
+            safe_top_p = max(0.05, min(safe_top_p, 1.0))
+
+        eos_id = tokenizer.eos_token_id
+        pad_id = tokenizer.pad_token_id if tokenizer.pad_token_id is not None else eos_id
+        gen_kwargs: dict[str, Any] = {
+            "input_ids": input_ids,
+            "max_new_tokens": safe_max_new_tokens,
+            "do_sample": do_sample,
+            "pad_token_id": pad_id,
+            "eos_token_id": eos_id,
+            "use_cache": True,
+        }
+        if attention_mask is not None:
+            gen_kwargs["attention_mask"] = attention_mask
+        if do_sample:
+            gen_kwargs["temperature"] = safe_temperature
+            gen_kwargs["top_p"] = safe_top_p
+
+        with torch.no_grad():
+            output_ids = model.generate(**gen_kwargs)
+        prompt_len = int(input_ids.shape[1])
+        new_ids = output_ids[0, prompt_len:]
+        text = tokenizer.decode(new_ids, skip_special_tokens=True, clean_up_tokenization_spaces=False).strip()
+        if not text:
+            text = tokenizer.decode(new_ids, skip_special_tokens=False, clean_up_tokenization_spaces=False).strip()
+
+        return {
+            "status": "ok",
+            "assistant_message": text,
+            "generated_token_count": int(new_ids.shape[0]),
+            "generation": {
+                "do_sample": bool(do_sample),
+                "temperature": safe_temperature if do_sample else 0.0,
+                "top_p": safe_top_p if do_sample else 1.0,
+                "max_new_tokens": safe_max_new_tokens,
+            },
+            "started_at": started_at,
+            "finished_at": time.time(),
+        }
+    except Exception as exc:  # noqa: BLE001 - chat endpoint should return diagnostics.
+        return {
+            "status": "error",
+            "error": "".join(traceback.format_exception(exc))[-12000:],
+            "started_at": started_at,
+            "finished_at": time.time(),
+        }
+    finally:
+        _RUN_STATE["action_id"] = None
+        _RUN_STATE["started_at"] = 0.0
+        _RUN_STATE["eta_seconds"] = 0.0
+        _RUN_LOCK.release()
 
 
 def execute_ui_action(
@@ -40,6 +228,12 @@ def execute_ui_action(
     params = params or {}
     root = Path(project_root).resolve()
     action = get_ui_action(action_id)
+    if action.command == "run-single-word-hidden-state-batch-average":
+        upsert_batch_mapping(
+            root,
+            batch_name=str(params.get("batch_name") or ""),
+            words_csv=str(params.get("words_csv") or ""),
+        )
     command_args = build_command_args(action, params)
     cmd = ["inprocess", "src.main", "--config", str(config_path), *command_args]
     started_at = time.time()
@@ -83,7 +277,11 @@ def execute_ui_action(
         return_code = 0
         # Hidden-state heatmap action returns payload directly; scanning large outputs
         # directories here can block UI response for a long time.
-        if action.command in {"run-single-word-hidden-state", "run-single-word-top-100-neurons"}:
+        if action.command in {
+            "run-single-word-hidden-state",
+            "run-single-word-hidden-state-batch-average",
+            "run-single-word-top-100-neurons",
+        }:
             artifacts = []
             csv_preview = None
         else:

@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import unquote, urlparse
 
-from .routes import actions_payload, execute_ui_action, parse_json_body
+from .routes import actions_payload, batch_options_payload, execute_chat_completion, execute_ui_action, parse_json_body
 
 
 DEFAULT_HOST = "127.0.0.1"
@@ -62,6 +62,10 @@ def _run_fastapi_server(project_root: Path, config_path: Path, *, host: str, por
     async def api_actions():
         return JSONResponse(actions_payload())
 
+    @app.get("/api/batches")
+    async def api_batches():
+        return JSONResponse(batch_options_payload(project_root))
+
     @app.post("/api/execute")
     async def api_execute(payload: dict[str, Any] | None = Body(default=None)):
         payload = payload or {}
@@ -73,6 +77,24 @@ def _run_fastapi_server(project_root: Path, config_path: Path, *, host: str, por
             project_root=project_root,
             config_path=config_path,
             timeout_seconds=int(payload.get("timeout_seconds") or 0),
+        )
+        if result.get("status") == "ok":
+            status = 200
+        elif result.get("status") == "busy":
+            status = 409
+        else:
+            status = 500
+        return JSONResponse(result, status_code=status)
+
+    @app.post("/api/chat")
+    async def api_chat(payload: dict[str, Any] | None = Body(default=None)):
+        payload = payload or {}
+        result = execute_chat_completion(
+            messages=payload.get("messages") or [],
+            config_path=config_path,
+            max_new_tokens=int(payload.get("max_new_tokens") or 128),
+            temperature=float(payload.get("temperature") or 0.7),
+            top_p=float(payload.get("top_p") or 0.9),
         )
         if result.get("status") == "ok":
             status = 200
@@ -133,6 +155,9 @@ def _make_handler(project_root: Path, config_path: Path) -> type[BaseHTTPRequest
             if path == "/api/actions":
                 self._send_json(actions_payload())
                 return
+            if path == "/api/batches":
+                self._send_json(batch_options_payload(project_root))
+                return
             if path.startswith("/static/"):
                 rel = unquote(path.removeprefix("/static/"))
                 self._send_file(_safe_join(static_dir, rel))
@@ -145,22 +170,31 @@ def _make_handler(project_root: Path, config_path: Path) -> type[BaseHTTPRequest
 
         def do_POST(self) -> None:  # noqa: N802
             parsed = urlparse(self.path)
-            if parsed.path != "/api/execute":
+            if parsed.path not in {"/api/execute", "/api/chat"}:
                 self._send_json({"error": "Not found"}, status=404)
                 return
             content_length = int(self.headers.get("Content-Length") or 0)
             body = self.rfile.read(content_length)
             try:
                 payload = parse_json_body(body)
-                action_id = str(payload.get("action_id") or "")
-                params = payload.get("params") or {}
-                result = execute_ui_action(
-                    action_id=action_id,
-                    params=params,
-                    project_root=project_root,
-                    config_path=config_path,
-                    timeout_seconds=int(payload.get("timeout_seconds") or 0),
-                )
+                if parsed.path == "/api/chat":
+                    result = execute_chat_completion(
+                        messages=payload.get("messages") or [],
+                        config_path=config_path,
+                        max_new_tokens=int(payload.get("max_new_tokens") or 128),
+                        temperature=float(payload.get("temperature") or 0.7),
+                        top_p=float(payload.get("top_p") or 0.9),
+                    )
+                else:
+                    action_id = str(payload.get("action_id") or "")
+                    params = payload.get("params") or {}
+                    result = execute_ui_action(
+                        action_id=action_id,
+                        params=params,
+                        project_root=project_root,
+                        config_path=config_path,
+                        timeout_seconds=int(payload.get("timeout_seconds") or 0),
+                    )
                 if result.get("status") == "ok":
                     self._send_json(result, status=200)
                 elif result.get("status") == "busy":

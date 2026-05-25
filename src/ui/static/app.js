@@ -19,6 +19,23 @@ const showCsvButton = document.getElementById("showCsvButton");
 const histogramButton = document.getElementById("histogramButton");
 const colorMapButton = document.getElementById("colorMapButton");
 const chartsContainer = document.getElementById("chartsContainer");
+const chatTranscript = document.getElementById("chatTranscript");
+const chatInput = document.getElementById("chatInput");
+const chatSendButton = document.getElementById("chatSendButton");
+const chatClearButton = document.getElementById("chatClearButton");
+const chatTemperature = document.getElementById("chatTemperature");
+const chatMaxTokens = document.getElementById("chatMaxTokens");
+
+let chatMessages = [];
+
+function heatmapColorFromValue(value, threshold) {
+  const safeThreshold = Math.max(0.000001, Number(threshold) || 1);
+  const intensity = Math.min(1, Math.abs(Number(value) || 0) / safeThreshold);
+  const red = value > 0 ? Math.round(255 * intensity) : 0;
+  const blue = value < 0 ? Math.round(255 * intensity) : 0;
+  if (value > 0 || value < 0) return `rgb(${red},0,${blue})`;
+  return "rgb(0,0,0)";
+}
 
 async function loadActions() {
   setStatus("Loading");
@@ -89,6 +106,7 @@ function renderForm(fields) {
     paramsForm.appendChild(wrap);
   });
   updateBosAssistantVisibility();
+  updateBatchNameDropdown();
 }
 
 function collectParams() {
@@ -122,6 +140,7 @@ function toDisplayProtocol(heatmap) {
 
 function updateCommandPreview() {
   updateBosAssistantVisibility();
+  updateBatchNameDropdownVisibility();
   if (!selectedAction) {
     commandPreview.textContent = "";
     return;
@@ -151,6 +170,68 @@ function updateBosAssistantVisibility() {
   assistantWrap.style.display = "";
 }
 
+function updateBatchNameDropdownVisibility() {
+  const batchSelect = paramsForm.querySelector("select[name='batch_name_picker']");
+  const batchInput = paramsForm.elements.namedItem("batch_name");
+  if (!batchSelect || !batchInput) return;
+  const wrap = batchSelect.closest(".field-inline");
+  if (!wrap) return;
+  wrap.style.display = selectedAction && selectedAction.id === "study_single_word_hidden_state_batch_average" ? "" : "none";
+}
+
+async function updateBatchNameDropdown() {
+  if (!selectedAction || selectedAction.id !== "study_single_word_hidden_state_batch_average") return;
+  const batchInput = paramsForm.elements.namedItem("batch_name");
+  const wordsInput = paramsForm.elements.namedItem("words_csv");
+  const batchField = paramsForm.querySelector(".field[data-field-name='batch_name']");
+  if (!batchInput || !wordsInput || !batchField) return;
+  if (batchField.querySelector("select[name='batch_name_picker']")) {
+    updateBatchNameDropdownVisibility();
+    return;
+  }
+
+  const inline = document.createElement("div");
+  inline.className = "field-inline";
+  const picker = document.createElement("select");
+  picker.name = "batch_name_picker";
+  const placeholder = document.createElement("option");
+  placeholder.value = "";
+  placeholder.textContent = "Choose saved batch";
+  picker.appendChild(placeholder);
+  inline.appendChild(picker);
+  batchField.appendChild(inline);
+
+  try {
+    const resp = await fetch("/api/batches");
+    const payload = await resp.json();
+    const batches = Array.isArray(payload.batches) ? payload.batches : [];
+    batches.forEach((item) => {
+      const name = String(item.name || "").trim();
+      if (!name) return;
+      const option = document.createElement("option");
+      option.value = name;
+      option.textContent = name;
+      option.dataset.wordsCsv = String(item.words_csv || "");
+      picker.appendChild(option);
+    });
+  } catch (_error) {
+    const option = document.createElement("option");
+    option.value = "";
+    option.textContent = "Failed to load batches";
+    picker.appendChild(option);
+  }
+
+  picker.addEventListener("change", () => {
+    const opt = picker.selectedOptions[0];
+    const name = opt ? String(opt.value || "") : "";
+    const wordsCsv = opt ? String(opt.dataset.wordsCsv || "") : "";
+    if (name) batchInput.value = name;
+    if (wordsCsv) wordsInput.value = wordsCsv;
+    updateCommandPreview();
+  });
+  updateBatchNameDropdownVisibility();
+}
+
 async function runSelectedAction() {
   if (!selectedAction) return;
   const params = collectParams();
@@ -168,8 +249,14 @@ async function runSelectedAction() {
       body: JSON.stringify({ action_id: selectedAction.id, params }),
     });
     lastResult = await response.json();
-    renderResult(lastResult);
     renderResultInWindow(studyWindow, lastResult);
+    if (lastResult && lastResult.status === "ok") {
+      resultSummary.textContent = "Study finished. Results are shown in the popup window.";
+    } else if (lastResult && lastResult.status === "busy") {
+      resultSummary.textContent = "Study is busy. Please wait and retry.";
+    } else {
+      resultSummary.textContent = "Study failed. Check the popup window for details.";
+    }
   } catch (error) {
     lastResult = null;
     resultSummary.innerHTML = `<span class="error">${escapeHtml(error.message)}</span>`;
@@ -269,10 +356,24 @@ function renderArtifactsIntoDoc(doc, container, artifacts) {
 
 function renderHeatmapIntoDoc(doc, container, heatmap) {
   container.innerHTML = "<h3>Hidden State</h3>";
-  if (!heatmap || heatmap.ok === false || !Array.isArray(heatmap.matrix) || heatmap.matrix.length === 0) {
+  const hasMatrix = Boolean(Array.isArray(heatmap && heatmap.matrix) && heatmap.matrix.length > 0);
+  const hasHeatmaps = Boolean(Array.isArray(heatmap && heatmap.heatmaps) && heatmap.heatmaps.length > 0);
+  const hasTasks = Boolean(Array.isArray(heatmap && heatmap.ui_tasks) && heatmap.ui_tasks.length > 0);
+  if (!heatmap || heatmap.ok === false || (!hasMatrix && !hasHeatmaps && !hasTasks)) {
     const msg = doc.createElement("div");
     msg.className = "error";
-    msg.textContent = "No heatmap result.";
+    if (heatmap && heatmap.ok === false) {
+      const reason = String(heatmap.reason || "unknown");
+      if (reason === "single_token_required") {
+        const word = String(heatmap.offending_word || heatmap.word || "");
+        const tokenCount = Number(heatmap.token_count || 0);
+        msg.textContent = `Invalid input: word "${word}" maps to ${tokenCount} tokens (single token required).`;
+      } else {
+        msg.textContent = `Heatmap failed: ${reason}`;
+      }
+    } else {
+      msg.textContent = "No heatmap result.";
+    }
     container.appendChild(msg);
     renderTopLogitsTableIntoDoc(
       doc,
@@ -294,17 +395,108 @@ function renderHeatmapIntoDoc(doc, container, heatmap) {
     );
     return;
   }
-  const rows = Number(heatmap.rows || heatmap.matrix.length);
-  const cols = Number(heatmap.cols || (heatmap.matrix[0] ? heatmap.matrix[0].length : 0));
-  const cell = 10;
   const info = doc.createElement("div");
   info.className = "muted";
   info.textContent = `word=${heatmap.word || ""}, source=${heatmap.cache_source || "unknown"}, protocol=${toDisplayProtocol(heatmap)}, logits=${heatmap.logits_source || "unknown"}`;
   container.appendChild(info);
+
+  const tasks = Array.isArray(heatmap.ui_tasks) ? heatmap.ui_tasks : [];
+  if (tasks.length > 0) {
+    tasks.forEach((task) => {
+      const name = String((task && task.name) || "");
+      const valueKey = String((task && task.value_key) || "");
+      const value = valueKey ? heatmap[valueKey] : undefined;
+      if (name === "render_heatmap") {
+        // Support:
+        // 1) value_key -> 2D matrix
+        // 2) value_key -> [{title,matrix}, ...]
+        // 3) fallback to heatmap.heatmaps / heatmap.matrix
+        if (Array.isArray(value) && value.length > 0 && Array.isArray(value[0]) && Array.isArray(value[0][0]) === false) {
+          renderOneHeatmapIntoDoc(doc, container, value, "Hidden State Heatmap");
+          return;
+        }
+        if (Array.isArray(value) && value.length > 0 && value[0] && typeof value[0] === "object" && Array.isArray(value[0].matrix)) {
+          value.forEach((hm, idx) => {
+            renderOneHeatmapIntoDoc(
+              doc,
+              container,
+              hm.matrix,
+              String(hm.title || `Heatmap ${idx + 1}`),
+            );
+          });
+          return;
+        }
+        const fallbackHeatmaps = Array.isArray(heatmap.heatmaps) && heatmap.heatmaps.length > 0
+          ? heatmap.heatmaps
+          : [{ title: "Hidden State Heatmap", matrix: heatmap.matrix }];
+        fallbackHeatmaps.forEach((hm, idx) => {
+          renderOneHeatmapIntoDoc(
+            doc,
+            container,
+            hm && Array.isArray(hm.matrix) ? hm.matrix : [],
+            String((hm && hm.title) || `Heatmap ${idx + 1}`),
+          );
+        });
+        return;
+      }
+      if (name === "render_logits") {
+        renderTopLogitsTableIntoDoc(
+          doc,
+          container,
+          Array.isArray(value) ? value : (heatmap.top_logits || []),
+          heatmap,
+          "Top 15 Logits (with cosine similarity)",
+          "logits_source",
+          "logits_error",
+        );
+        return;
+      }
+      if (name === "render_logits_top100") {
+        renderTopLogitsTableIntoDoc(
+          doc,
+          container,
+          Array.isArray(value) ? value : (heatmap.top_logits_top100 || []),
+          heatmap,
+          "Top 15 Logits (Penultimate Top-100 Intervention)",
+          "top_logits_top100_source",
+          "top_logits_top100_error",
+        );
+      }
+    });
+    return;
+  }
+
+  // Backward-compatible fallback for older payloads without ui_tasks.
+  const fallbackHeatmaps = Array.isArray(heatmap.heatmaps) && heatmap.heatmaps.length > 0
+    ? heatmap.heatmaps
+    : [{ key: "default", title: "Hidden State Heatmap", matrix: heatmap.matrix }];
+  fallbackHeatmaps.forEach((hm, hmIdx) => {
+    renderOneHeatmapIntoDoc(
+      doc,
+      container,
+      hm && Array.isArray(hm.matrix) ? hm.matrix : [],
+      String((hm && hm.title) || `Heatmap ${hmIdx + 1}`),
+    );
+  });
+  renderTopLogitsTableIntoDoc(doc, container, heatmap.top_logits || [], heatmap, "Top 15 Logits (with cosine similarity)", "logits_source", "logits_error");
+  renderTopLogitsTableIntoDoc(doc, container, heatmap.top_logits_top100 || [], heatmap, "Top 15 Logits (Penultimate Top-100 Intervention)", "top_logits_top100_source", "top_logits_top100_error");
+}
+
+function renderOneHeatmapIntoDoc(doc, container, matrix, titleText) {
+  const rows = Number(Array.isArray(matrix) ? matrix.length : 0);
+  const cols = Number(rows > 0 && Array.isArray(matrix[0]) ? matrix[0].length : 0);
+  if (!rows || !cols) return;
+
+  const title = doc.createElement("h4");
+  title.textContent = String(titleText || "Heatmap");
+  container.appendChild(title);
+
+  const cell = 10;
   const hoverMeta = doc.createElement("div");
   hoverMeta.className = "muted";
   hoverMeta.textContent = "Hover: X=-, Y=-";
   container.appendChild(hoverMeta);
+
   const controls = doc.createElement("div");
   controls.className = "muted";
   const thresholdLabel = doc.createElement("span");
@@ -321,6 +513,7 @@ function renderHeatmapIntoDoc(doc, container, heatmap) {
   controls.appendChild(thresholdSlider);
   controls.appendChild(thresholdValue);
   container.appendChild(controls);
+
   const wrap = doc.createElement("div");
   wrap.className = "scroll";
   const canvas = doc.createElement("canvas");
@@ -332,15 +525,11 @@ function renderHeatmapIntoDoc(doc, container, heatmap) {
   if (!ctx) return;
 
   function drawWithThreshold(threshold) {
-    const safeThreshold = Math.max(0.000001, Number(threshold) || 1);
     for (let r = 0; r < rows; r += 1) {
-      const row = heatmap.matrix[r] || [];
+      const row = matrix[r] || [];
       for (let c = 0; c < cols; c += 1) {
         const v = Number(row[c] || 0);
-        const intensity = Math.min(1, Math.abs(v) / safeThreshold);
-        const red = v > 0 ? Math.round(255 * intensity) : 0;
-        const blue = v < 0 ? Math.round(255 * intensity) : 0;
-        ctx.fillStyle = `rgb(${red},0,${blue})`;
+        ctx.fillStyle = heatmapColorFromValue(v, threshold);
         ctx.fillRect(c * cell, r * cell, cell, cell);
       }
     }
@@ -360,7 +549,7 @@ function renderHeatmapIntoDoc(doc, container, heatmap) {
       hoverMeta.textContent = "Hover: X=-, Y=-";
       return;
     }
-    const row = heatmap.matrix[y] || [];
+    const row = matrix[y] || [];
     const value = Number(row[x] || 0);
     hoverMeta.textContent = `Hover: X=${x} (neuron), Y=${y} (layer), value=${value.toFixed(6)}`;
   });
@@ -369,25 +558,6 @@ function renderHeatmapIntoDoc(doc, container, heatmap) {
   });
 
   drawWithThreshold(heatmapThreshold);
-
-  renderTopLogitsTableIntoDoc(
-    doc,
-    container,
-    heatmap.top_logits || [],
-    heatmap,
-    "Top 15 Logits (with cosine similarity)",
-    "logits_source",
-    "logits_error",
-  );
-  renderTopLogitsTableIntoDoc(
-    doc,
-    container,
-    heatmap.top_logits_top100 || [],
-    heatmap,
-    "Top 15 Logits (Penultimate Top-100 Intervention)",
-    "top_logits_top100_source",
-    "top_logits_top100_error",
-  );
 }
 
 function renderTopLogitsTableIntoDoc(doc, container, rows, heatmap, titleText, sourceKey, errorKey) {
@@ -544,17 +714,11 @@ function renderHiddenStateHeatmap(heatmap) {
   if (!Number.isFinite(maxAbs) || maxAbs <= 0) maxAbs = 1;
 
   function drawWithThreshold(threshold) {
-    const safeThreshold = Math.max(0.000001, Number(threshold) || 1);
     for (let r = 0; r < rows; r += 1) {
       const row = heatmap.matrix[r] || [];
       for (let c = 0; c < cols; c += 1) {
         const v = Number(row[c] || 0);
-        const intensity = Math.min(1, Math.abs(v) / safeThreshold);
-        let red = 0;
-        let blue = 0;
-        if (v > 0) red = Math.round(255 * intensity);
-        else if (v < 0) blue = Math.round(255 * intensity);
-        ctx.fillStyle = `rgb(${red},0,${blue})`;
+        ctx.fillStyle = heatmapColorFromValue(v, threshold);
         ctx.fillRect(c * cell, r * cell, cell, cell);
       }
     }
@@ -796,6 +960,81 @@ function addChart(title, html) {
   chartsContainer.prepend(card);
 }
 
+function initChat() {
+  chatMessages = [];
+  renderChatTranscript();
+  appendChatMeta("Chat is ready. Press Enter to send, Shift+Enter for newline.");
+}
+
+function appendChatMeta(text) {
+  const node = document.createElement("div");
+  node.className = "chat-bubble meta";
+  node.textContent = text;
+  chatTranscript.appendChild(node);
+  chatTranscript.scrollTop = chatTranscript.scrollHeight;
+}
+
+function renderChatTranscript() {
+  chatTranscript.innerHTML = "";
+  chatMessages.forEach((msg) => {
+    const bubble = document.createElement("div");
+    bubble.className = `chat-bubble ${msg.role === "user" ? "user" : "assistant"}`;
+    bubble.textContent = msg.content;
+    chatTranscript.appendChild(bubble);
+  });
+  chatTranscript.scrollTop = chatTranscript.scrollHeight;
+}
+
+async function sendChatMessage() {
+  const text = (chatInput.value || "").trim();
+  if (!text) return;
+  const temp = Number(chatTemperature.value);
+  const maxTokens = Number(chatMaxTokens.value);
+
+  chatMessages.push({ role: "user", content: text });
+  renderChatTranscript();
+  chatInput.value = "";
+  chatSendButton.disabled = true;
+  setStatus("Chatting");
+
+  try {
+    const response = await fetch("/api/chat", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        messages: chatMessages,
+        temperature: Number.isFinite(temp) ? temp : 0.7,
+        max_new_tokens: Number.isFinite(maxTokens) ? maxTokens : 128,
+        top_p: 0.9,
+      }),
+    });
+    const payload = await response.json();
+    if (!response.ok || payload.status !== "ok") {
+      const detail = payload.error || payload.stderr || `HTTP ${response.status}`;
+      appendChatMeta(`Error: ${detail}`);
+      return;
+    }
+    const assistantText = String(payload.assistant_message || "").trim();
+    chatMessages.push({
+      role: "assistant",
+      content: assistantText || "[empty response]",
+    });
+    renderChatTranscript();
+  } catch (error) {
+    appendChatMeta(`Error: ${error.message}`);
+  } finally {
+    chatSendButton.disabled = false;
+    setStatus("Ready");
+    chatInput.focus();
+  }
+}
+
+function clearChat() {
+  chatMessages = [];
+  renderChatTranscript();
+  appendChatMeta("Chat history cleared.");
+}
+
 function setStatus(value) {
   serverStatus.textContent = value;
 }
@@ -820,8 +1059,20 @@ runButton.addEventListener("click", runSelectedAction);
 showCsvButton.addEventListener("click", () => lastResult && renderCsv(lastResult.csv_preview));
 histogramButton.addEventListener("click", addHistogram);
 colorMapButton.addEventListener("click", addColorMap);
+paramsForm.addEventListener("submit", (event) => {
+  event.preventDefault();
+});
+chatSendButton.addEventListener("click", sendChatMessage);
+chatClearButton.addEventListener("click", clearChat);
+chatInput.addEventListener("keydown", (event) => {
+  if (event.key === "Enter" && !event.shiftKey) {
+    event.preventDefault();
+    sendChatMessage();
+  }
+});
 
 loadActions().catch((error) => {
   setStatus("Error");
   resultSummary.innerHTML = `<span class="error">${escapeHtml(error.message)}</span>`;
 });
+initChat();

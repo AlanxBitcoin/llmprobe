@@ -52,6 +52,7 @@ from src.study import (
     run_attribute_probe_study,
     run_linear_probe_study,
     run_single_word_hidden_state_study,
+    run_single_word_hidden_state_batch_average_study,
     run_single_word_top_100_neurons_study,
 )
 from src.utils.extract_hidden import preload_hidden_store, preload_hidden_store_from_disk
@@ -125,6 +126,24 @@ def build_parser() -> argparse.ArgumentParser:
         help="Whether to include BOS context in single-word hidden-state extraction (true/false)",
     )
     hidden_map.add_argument(
+        "--include-assistant",
+        type=_parse_bool_flag,
+        default=False,
+        help="Whether to include assistant chat-prefix context (true/false; requires include-bos=true)",
+    )
+
+    hidden_map_batch_avg = subparsers.add_parser(
+        "run-single-word-hidden-state-batch-average",
+        help="Compute averaged hidden-state matrix from comma-separated words, then return top logits",
+    )
+    hidden_map_batch_avg.add_argument("words_csv", help="Comma-separated words, e.g. apple, banana, orange")
+    hidden_map_batch_avg.add_argument(
+        "--include-bos",
+        type=_parse_bool_flag,
+        default=True,
+        help="Whether to include BOS context in batch-average hidden-state extraction (true/false)",
+    )
+    hidden_map_batch_avg.add_argument(
         "--include-assistant",
         type=_parse_bool_flag,
         default=False,
@@ -244,6 +263,16 @@ def _execute_parsed_args(args: argparse.Namespace, config: dict[str, Any]) -> di
     if args.command == "run-single-word-hidden-state":
         heatmap = run_single_word_hidden_state_study(
             word=args.word,
+            include_bos=bool(args.include_bos),
+            include_assistant=bool(args.include_assistant),
+            config=config,
+            config_path=args.config,
+        )
+        return {"hidden_state_heatmap": heatmap}
+
+    if args.command == "run-single-word-hidden-state-batch-average":
+        heatmap = run_single_word_hidden_state_batch_average_study(
+            words_csv=args.words_csv,
             include_bos=bool(args.include_bos),
             include_assistant=bool(args.include_assistant),
             config=config,
