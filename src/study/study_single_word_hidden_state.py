@@ -35,11 +35,21 @@ from ..probes.single_word_hidden_state_probe import fetch_single_word_hidden_sta
 def run_study(
     *,
     word: str,
+    include_bos: bool = True,
+    include_assistant: bool = False,
     config: dict[str, Any] | None = None,
     config_path: str | Path = "configs/custom.yaml",
 ) -> dict[str, Any]:
     cfg = config or load_config(config_path)
-    heatmap = fetch_single_word_hidden_state(word=word, config=cfg)
+    heatmap = fetch_single_word_hidden_state(
+        word=word,
+        include_bos=bool(include_bos),
+        include_assistant=bool(include_assistant),
+        config=cfg,
+    )
+    if isinstance(heatmap, dict):
+        heatmap["include_bos"] = bool(include_bos)
+        heatmap["include_assistant"] = bool(include_assistant)
 
     if not isinstance(heatmap, dict) or not heatmap.get("ok"):
         if isinstance(heatmap, dict):

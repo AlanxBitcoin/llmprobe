@@ -118,6 +118,18 @@ def build_parser() -> argparse.ArgumentParser:
         help="Compute and return full hidden-state matrix (embedding + layers) for one word",
     )
     hidden_map.add_argument("word", help="Bare English word")
+    hidden_map.add_argument(
+        "--include-bos",
+        type=_parse_bool_flag,
+        default=True,
+        help="Whether to include BOS context in single-word hidden-state extraction (true/false)",
+    )
+    hidden_map.add_argument(
+        "--include-assistant",
+        type=_parse_bool_flag,
+        default=False,
+        help="Whether to include assistant chat-prefix context (true/false; requires include-bos=true)",
+    )
 
     top100 = subparsers.add_parser(
         "run-single-word-top-100-neurons",
@@ -232,6 +244,8 @@ def _execute_parsed_args(args: argparse.Namespace, config: dict[str, Any]) -> di
     if args.command == "run-single-word-hidden-state":
         heatmap = run_single_word_hidden_state_study(
             word=args.word,
+            include_bos=bool(args.include_bos),
+            include_assistant=bool(args.include_assistant),
             config=config,
             config_path=args.config,
         )

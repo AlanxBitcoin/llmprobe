@@ -15,7 +15,12 @@ import time
 import numpy as np
 import torch
 
-from .token_hidden_store import TokenHiddenStore, build_hidden_store_config
+from .token_hidden_store import (
+    TokenHiddenStore,
+    build_hidden_store_config,
+    parse_token_ids_with_bos_alias,
+    protocol_from_flags,
+)
 
 
 class HiddenStoreRuntime:
@@ -184,7 +189,7 @@ def extract_single_word_hidden_matrix(bundle, word: str, config: dict[str, Any] 
     word = str(word).strip()
     tokenizer = bundle.tokenizer
     store = _get_hidden_store(bundle, config)
-    token_ids = [int(x) for x in (tokenizer(word, add_special_tokens=False).get("input_ids") or [])]
+    token_ids = parse_token_ids_with_bos_alias(tokenizer, word)
     print(f"[single_word_hidden_state] word={word!r} token_ids={token_ids}", file=sys.stderr)
     if len(token_ids) != 1:
         print(
@@ -222,7 +227,7 @@ def extract_single_word_hidden_matrix(bundle, word: str, config: dict[str, Any] 
         store.flush()
         cache_source = "model"
         print(f"[single_word_hidden_state] path=model+writeback elapsed={time.time() - t0:.3f}s", file=sys.stderr)
-    encoded = tokenizer(word, return_tensors="pt")
+    resolved_tokens = tokenizer.convert_ids_to_tokens([token_id])
     row_labels = ["embedding"] + [f"layer_{idx}" for idx in range(1, matrix.shape[0])]
     return {
         "ok": True,
@@ -231,14 +236,17 @@ def extract_single_word_hidden_matrix(bundle, word: str, config: dict[str, Any] 
         "cols": int(matrix.shape[1]),
         "row_labels": row_labels,
         "matrix": matrix.tolist(),
-        "tokens": tokenizer.convert_ids_to_tokens(encoded["input_ids"][0]),
+        "tokens": resolved_tokens,
         "cache_source": cache_source,
+        "protocol": store.cfg.protocol,
     }
 
 
 def extract_single_word_hidden_matrix_store_first(
     *,
     word: str,
+    include_bos: bool,
+    include_assistant: bool,
     config: dict[str, Any],
     bundle_loader,
 ) -> dict[str, Any]:
@@ -260,7 +268,7 @@ def extract_single_word_hidden_matrix_store_first(
         tokenizer_path,
         trust_remote_code=bool(model_cfg.get("trust_remote_code", True)),
     )
-    token_ids = [int(x) for x in (tokenizer(normalized_word, add_special_tokens=False).get("input_ids") or [])]
+    token_ids = parse_token_ids_with_bos_alias(tokenizer, normalized_word)
     print(f"[single_word_hidden_state] store_first word={normalized_word!r} token_ids={token_ids}", file=sys.stderr)
     if len(token_ids) != 1:
         return {
@@ -279,6 +287,9 @@ def extract_single_word_hidden_matrix_store_first(
     # Build store config without requiring a loaded model: infer dims from model config file.
     merged = dict(config or {})
     hs_cfg = dict((merged.get("hidden_store") or {}))
+    bos_flag = bool(include_bos)
+    assistant_flag = bool(include_assistant) and bos_flag
+    hs_cfg["protocol"] = protocol_from_flags(bos=bos_flag, assistant=assistant_flag)
     auto_cfg = AutoConfig.from_pretrained(model_path, trust_remote_code=bool(model_cfg.get("trust_remote_code", True)))
     if hs_cfg.get("n_layers") is None:
         hs_cfg["n_layers"] = int(getattr(auto_cfg, "num_hidden_layers")) + 1
@@ -289,7 +300,13 @@ def extract_single_word_hidden_matrix_store_first(
     store = _HIDDEN_STORE_RUNTIME.get_or_create(store_cfg, tokenizer)
 
     token_id = int(token_ids[0])
-    if store.contains(token_id):
+    hit = store.contains(token_id)
+    print(
+        f"[single_word_hidden_state] store_first protocol={store.cfg.protocol} token_id={token_id} hit={hit} "
+        f"data_file={store.cfg.data_file.name}",
+        file=sys.stderr,
+    )
+    if hit:
         matrix = np.asarray(store.get_all_layers(token_id), dtype=np.float32)
         return {
             "ok": True,
@@ -300,11 +317,12 @@ def extract_single_word_hidden_matrix_store_first(
             "matrix": matrix.tolist(),
             "tokens": tokenizer.convert_ids_to_tokens(token_ids),
             "cache_source": "disk",
+            "protocol": store.cfg.protocol,
         }
 
     # Miss: only now allow model load + compute.
     bundle = bundle_loader()
-    return extract_single_word_hidden_matrix(bundle, normalized_word, config=config)
+    return extract_single_word_hidden_matrix(bundle, normalized_word, config=merged)
 
 
 def summarize_top_dims(vector: np.ndarray, top_k: int) -> list[dict[str, float]]:

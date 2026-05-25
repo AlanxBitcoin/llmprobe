@@ -12,6 +12,7 @@ from ..runtime_api import RuntimeRequest, get_runtime_api, start_llama_api
 from ..utils.extract_hidden import extract_single_word_hidden_matrix_store_first
 from ..utils.hooks import starting_from_middle_layer
 from ..utils.logits import rank_vector_logits_and_cosine
+from ..utils.token_hidden_store import build_protocol_input_ids, parse_token_ids_with_bos_alias
 
 
 def _get_or_start_runtime_api(config: dict[str, Any]):
@@ -21,7 +22,12 @@ def _get_or_start_runtime_api(config: dict[str, Any]):
         return start_llama_api(config)
 
 
-def fetch_single_word_hidden_state(word: str, config: dict[str, Any]) -> dict[str, Any]:
+def fetch_single_word_hidden_state(
+    word: str,
+    include_bos: bool,
+    include_assistant: bool,
+    config: dict[str, Any],
+) -> dict[str, Any]:
     """Store-first hidden-state retrieval for a single-token word."""
     api = _get_or_start_runtime_api(config)
 
@@ -31,6 +37,8 @@ def fetch_single_word_hidden_state(word: str, config: dict[str, Any]) -> dict[st
 
     return extract_single_word_hidden_matrix_store_first(
         word=word,
+        include_bos=bool(include_bos),
+        include_assistant=bool(include_assistant),
         config=config,
         bundle_loader=_bundle_loader,
     )
@@ -66,30 +74,10 @@ def rank_last_layer_logits_from_heatmap(
 
 
 def _build_protocol_input_ids_from_word(tokenizer, *, word: str, protocol: str) -> list[int]:
-    token_ids = [int(x) for x in (tokenizer(word, add_special_tokens=False).get("input_ids") or [])]
+    token_ids = parse_token_ids_with_bos_alias(tokenizer, word)
     if len(token_ids) != 1:
         raise ValueError(f"single_token_required: token_count={len(token_ids)}")
-    token_id = int(token_ids[0])
-
-    if protocol == "bos0_assistant0":
-        return [token_id]
-    if protocol == "bos1_assistant0":
-        bos_id = tokenizer.bos_token_id
-        if bos_id is None:
-            raise ValueError("Tokenizer has no bos_token_id but protocol requires BOS")
-        return [int(bos_id), token_id]
-    if protocol == "bos1_assistant1":
-        if not hasattr(tokenizer, "apply_chat_template"):
-            raise ValueError("Tokenizer does not support apply_chat_template for assistant protocol")
-        prefix = tokenizer.apply_chat_template(
-            [{"role": "user", "content": ""}],
-            tokenize=True,
-            add_generation_prompt=True,
-        )
-        if not prefix:
-            raise ValueError("Chat template returned empty prefix")
-        return [int(x) for x in prefix] + [token_id]
-    raise ValueError(f"Unsupported hidden_store protocol: {protocol}")
+    return build_protocol_input_ids(tokenizer, protocol, [int(token_ids[0])])
 
 
 def _sparsify_abs_topk(vector_1d: torch.Tensor, keep_k: int) -> tuple[torch.Tensor, list[int]]:

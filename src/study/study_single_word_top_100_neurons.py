@@ -28,7 +28,7 @@ def run_study(
     intervention_layer: int = 30,
 ) -> dict[str, Any]:
     cfg = config or load_config(config_path)
-    heatmap = fetch_single_word_hidden_state(word=word, config=cfg)
+    heatmap = fetch_single_word_hidden_state(word=word, include_bos=True, include_assistant=False, config=cfg)
     heatmap["top100_request"] = {
         "top_k_neurons": int(top_k_neurons),
         "intervention_layer": int(intervention_layer),

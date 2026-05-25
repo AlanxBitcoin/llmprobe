@@ -17,6 +17,7 @@ import torch
 
 
 _ALLOWED_PROTOCOLS = {"bos0_assistant0", "bos1_assistant0", "bos1_assistant1"}
+_BOS_INPUT_SYMBOL = "<BOS>"
 
 
 @dataclass(frozen=True)
@@ -37,6 +38,17 @@ def _resolve_path(project_root: Path, value: str) -> Path:
     return (project_root / path).resolve()
 
 
+def _storage_protocol_name(protocol: str) -> str:
+    # Cache namespace versioning:
+    # bos1_assistant0 now uses user-header context (BOS+start_header+user+end_header+word).
+    if protocol == "bos1_assistant0":
+        return "bos1_assistant0_userhdr"
+    # bos1_assistant1 now aligns with full chat generation boundary token.
+    if protocol == "bos1_assistant1":
+        return "bos1_assistant1_chatgen"
+    return protocol
+
+
 def build_hidden_store_config(config: dict[str, Any] | None, bundle: Any | None = None) -> HiddenStoreConfig:
     store_cfg = (config or {}).get("hidden_store") or {}
 
@@ -49,8 +61,9 @@ def build_hidden_store_config(config: dict[str, Any] | None, bundle: Any | None 
     project_root = Path(__file__).resolve().parents[2]
     data_tpl = str(store_cfg.get("data_file", "data/cache/hidden_states.{protocol}.f16.bin"))
     done_tpl = str(store_cfg.get("progress_file", "data/cache/hidden_states.{protocol}.done.bin"))
-    data_file = _resolve_path(project_root, data_tpl.format(protocol=protocol))
-    progress_file = _resolve_path(project_root, done_tpl.format(protocol=protocol))
+    storage_protocol = _storage_protocol_name(protocol)
+    data_file = _resolve_path(project_root, data_tpl.format(protocol=storage_protocol))
+    progress_file = _resolve_path(project_root, done_tpl.format(protocol=storage_protocol))
 
     model_cfg = getattr(getattr(bundle, "model", None), "config", None)
     model_layers = getattr(model_cfg, "num_hidden_layers", None)
@@ -87,6 +100,174 @@ def protocol_from_flags(bos: bool, assistant: bool) -> str:
     if assistant:
         return "bos1_assistant1"
     return "bos1_assistant0"
+
+
+def parse_token_ids_with_bos_alias(tokenizer, text: str) -> list[int]:
+    """Tokenize text with add_special_tokens=False and support explicit BOS symbol input."""
+    normalized = str(text).strip()
+    if normalized.upper() == _BOS_INPUT_SYMBOL:
+        bos_id = tokenizer.bos_token_id
+        if bos_id is None:
+            raise ValueError("Tokenizer has no bos_token_id but '<BOS>' was requested")
+        return [int(bos_id)]
+    return [int(x) for x in (tokenizer(normalized, add_special_tokens=False).get("input_ids") or [])]
+
+
+def resolve_assistant_token_id(tokenizer) -> int:
+    """Resolve assistant marker token id for BOS->word->assistant protocol."""
+    start_ids = tokenizer("<|start_header_id|>", add_special_tokens=False).get("input_ids") or []
+    end_ids = tokenizer("<|end_header_id|>", add_special_tokens=False).get("input_ids") or []
+    if len(start_ids) == 1 and len(end_ids) == 1:
+        start_id = int(start_ids[0])
+        end_id = int(end_ids[0])
+        try:
+            chat = tokenizer.apply_chat_template(
+                [{"role": "user", "content": ""}],
+                tokenize=True,
+                add_generation_prompt=True,
+            )
+            ids = chat.get("input_ids") if isinstance(chat, dict) else chat
+            if hasattr(ids, "tolist"):
+                ids = ids.tolist()
+            if isinstance(ids, list) and ids and isinstance(ids[0], list):
+                ids = ids[0]
+            if isinstance(ids, list):
+                ids = [int(x) for x in ids]
+                for i in range(len(ids) - 1):
+                    if ids[i] == start_id:
+                        for j in range(i + 1, len(ids)):
+                            if ids[j] == end_id:
+                                between = ids[i + 1 : j]
+                                if len(between) == 1:
+                                    return int(between[0])
+                                break
+        except Exception:
+            pass
+
+    fallback = tokenizer("assistant", add_special_tokens=False).get("input_ids") or []
+    if len(fallback) != 1:
+        raise ValueError(
+            "Unable to resolve assistant marker token id. "
+            "Expected tokenizer('assistant', add_special_tokens=False) to return one token."
+        )
+    return int(fallback[0])
+
+
+def resolve_user_token_id(tokenizer) -> int:
+    """Resolve user role token id for BOS+header+user+end_header context."""
+    start_ids = tokenizer("<|start_header_id|>", add_special_tokens=False).get("input_ids") or []
+    end_ids = tokenizer("<|end_header_id|>", add_special_tokens=False).get("input_ids") or []
+    if len(start_ids) == 1 and len(end_ids) == 1:
+        start_id = int(start_ids[0])
+        end_id = int(end_ids[0])
+        try:
+            chat = tokenizer.apply_chat_template(
+                [{"role": "user", "content": ""}],
+                tokenize=True,
+                add_generation_prompt=True,
+            )
+            ids = _normalize_chat_template_ids(chat)
+            for i in range(len(ids) - 1):
+                if ids[i] == start_id:
+                    for j in range(i + 1, len(ids)):
+                        if ids[j] == end_id:
+                            between = ids[i + 1 : j]
+                            if len(between) == 1:
+                                return int(between[0])
+                            break
+        except Exception:
+            pass
+
+    fallback = tokenizer("user", add_special_tokens=False).get("input_ids") or []
+    if len(fallback) != 1:
+        raise ValueError(
+            "Unable to resolve user role token id. "
+            "Expected tokenizer('user', add_special_tokens=False) to return one token."
+        )
+    return int(fallback[0])
+
+
+def _normalize_chat_template_ids(payload: Any) -> list[int]:
+    if hasattr(payload, "get"):
+        ids = payload.get("input_ids")
+    else:
+        ids = payload
+    if ids is None:
+        return []
+    if hasattr(ids, "tolist"):
+        ids = ids.tolist()
+    if isinstance(ids, tuple):
+        ids = list(ids)
+    if isinstance(ids, list) and ids and isinstance(ids[0], list):
+        ids = ids[0]
+    if not isinstance(ids, list):
+        return []
+    return [int(x) for x in ids]
+
+
+def _build_assistant_chat_prefix(tokenizer, token_ids: list[int]) -> list[int]:
+    """Build BOS+user+content+eot+assistant_header(+pre-generation separator) sequence."""
+    empty_template = tokenizer.apply_chat_template(
+        [{"role": "user", "content": ""}],
+        tokenize=True,
+        add_generation_prompt=True,
+    )
+    ids = _normalize_chat_template_ids(empty_template)
+    if not ids:
+        raise ValueError("Chat template returned empty ids for assistant protocol")
+
+    eot_id = tokenizer.eos_token_id
+    if eot_id is None:
+        eot_ids = tokenizer("<|eot_id|>", add_special_tokens=False).get("input_ids") or []
+        if len(eot_ids) != 1:
+            raise ValueError("Unable to resolve <|eot_id|> for assistant protocol")
+        eot_id = int(eot_ids[0])
+
+    try:
+        eot_pos = ids.index(int(eot_id))
+    except ValueError as exc:
+        raise ValueError("Assistant protocol template missing <|eot_id|>") from exc
+
+    prefix_before_eot = ids[:eot_pos]  # BOS + user header + user-content separator
+    tail_from_eot = ids[eot_pos:]  # eot + assistant header (+ possible separator before generation)
+    return prefix_before_eot + [int(x) for x in token_ids] + tail_from_eot
+
+
+def _build_user_header_prefix(tokenizer, token_ids: list[int]) -> list[int]:
+    """Build BOS+user-header+user-content-separator + token_ids."""
+    empty_template = tokenizer.apply_chat_template(
+        [{"role": "user", "content": ""}],
+        tokenize=True,
+        add_generation_prompt=True,
+    )
+    ids = _normalize_chat_template_ids(empty_template)
+    if not ids:
+        raise ValueError("Chat template returned empty ids for user-prefix protocol")
+    eot_id = tokenizer.eos_token_id
+    if eot_id is None:
+        eot_ids = tokenizer("<|eot_id|>", add_special_tokens=False).get("input_ids") or []
+        if len(eot_ids) != 1:
+            raise ValueError("Unable to resolve <|eot_id|> for user-prefix protocol")
+        eot_id = int(eot_ids[0])
+    try:
+        eot_pos = ids.index(int(eot_id))
+    except ValueError as exc:
+        raise ValueError("User-prefix protocol template missing <|eot_id|>") from exc
+    prefix_before_eot = ids[:eot_pos]
+    return prefix_before_eot + [int(x) for x in token_ids]
+
+
+def build_protocol_input_ids(tokenizer, protocol: str, token_ids: list[int]) -> list[int]:
+    if not token_ids:
+        raise ValueError("token_ids is empty")
+    ids = [int(x) for x in token_ids]
+    if protocol == "bos0_assistant0":
+        return ids
+    if protocol == "bos1_assistant0":
+        return _build_user_header_prefix(tokenizer, ids)
+    if protocol == "bos1_assistant1":
+        return _build_assistant_chat_prefix(tokenizer, ids)
+    raise ValueError(f"Unsupported hidden_store protocol: {protocol!r}")
 
 
 def build_store_for_protocol(
@@ -263,6 +444,20 @@ class TokenHiddenStore:
         if cached is not None:
             print(f"[hidden_store] token_id={token_id} cache=memory_or_disk")
             return cached
+
+        # For BOS-required protocol, make BOS itself cache-resident first.
+        # This avoids repeatedly treating BOS as an uncached prerequisite.
+        if self.cfg.protocol == "bos1_assistant0":
+            bos_id = self.tokenizer.bos_token_id
+            if bos_id is None:
+                raise ValueError("Tokenizer has no bos_token_id but protocol requires BOS")
+            bos_id = int(bos_id)
+            if int(token_id) != bos_id and not self.contains(bos_id):
+                print(f"[hidden_store] token_id={token_id} ensure_bos_cache=miss->compute bos_id={bos_id}")
+                _ = self.get_or_compute_layers(bundle, bos_id)
+            elif int(token_id) != bos_id:
+                print(f"[hidden_store] token_id={token_id} ensure_bos_cache=hit bos_id={bos_id}")
+
         # Recovery path: if data exists but done flag is stale, mark done and reuse.
         if self._recover_done_from_data(token_id):
             print(f"[hidden_store] token_id={token_id} cache=recovered_from_data")
@@ -280,7 +475,7 @@ class TokenHiddenStore:
         - Single-token word: token-id table read-through (cache hit or compute+writeback)
         - Multi-token word: sequence cache read-through (cache hit or compute+writeback)
         """
-        ids = self.tokenizer(word, add_special_tokens=False).get("input_ids") or []
+        ids = parse_token_ids_with_bos_alias(self.tokenizer, word)
         if not ids:
             raise ValueError(f"Word produced empty token sequence: {word!r}")
         if len(ids) == 1:
@@ -319,53 +514,29 @@ class TokenHiddenStore:
             layers[idx] = vector
         return layers
 
+    @staticmethod
+    def _normalize_chat_prefix_ids(prefix: Any) -> list[int]:
+        """Normalize apply_chat_template outputs into a flat list[int]."""
+        data = prefix
+        if isinstance(data, dict):
+            data = data.get("input_ids")
+        if data is None:
+            return []
+        if hasattr(data, "tolist"):
+            data = data.tolist()
+        if isinstance(data, tuple):
+            data = list(data)
+        if not isinstance(data, list):
+            raise ValueError(f"Unsupported chat template output type: {type(prefix)!r}")
+        if data and isinstance(data[0], list):
+            data = data[0]
+        return [int(x) for x in data]
+
     def _build_protocol_input_ids(self, token_id: int) -> list[int]:
-        protocol = self.cfg.protocol
-        if protocol == "bos0_assistant0":
-            return [token_id]
-
-        if protocol == "bos1_assistant0":
-            bos_id = self.tokenizer.bos_token_id
-            if bos_id is None:
-                raise ValueError("Tokenizer has no bos_token_id but protocol requires BOS")
-            return [int(bos_id), token_id]
-
-        # bos1_assistant1
-        if not hasattr(self.tokenizer, "apply_chat_template"):
-            raise ValueError("Tokenizer does not support apply_chat_template for assistant protocol")
-        prefix = self.tokenizer.apply_chat_template(
-            [{"role": "user", "content": ""}],
-            tokenize=True,
-            add_generation_prompt=True,
-        )
-        if not prefix:
-            raise ValueError("Chat template returned empty prefix")
-        return [int(x) for x in prefix] + [token_id]
+        return build_protocol_input_ids(self.tokenizer, self.cfg.protocol, [int(token_id)])
 
     def _build_protocol_input_ids_from_list(self, token_ids: list[int]) -> list[int]:
-        if not token_ids:
-            raise ValueError("token_ids is empty")
-        protocol = self.cfg.protocol
-        if protocol == "bos0_assistant0":
-            return [int(x) for x in token_ids]
-
-        if protocol == "bos1_assistant0":
-            bos_id = self.tokenizer.bos_token_id
-            if bos_id is None:
-                raise ValueError("Tokenizer has no bos_token_id but protocol requires BOS")
-            return [int(bos_id)] + [int(x) for x in token_ids]
-
-        # bos1_assistant1
-        if not hasattr(self.tokenizer, "apply_chat_template"):
-            raise ValueError("Tokenizer does not support apply_chat_template for assistant protocol")
-        prefix = self.tokenizer.apply_chat_template(
-            [{"role": "user", "content": ""}],
-            tokenize=True,
-            add_generation_prompt=True,
-        )
-        if not prefix:
-            raise ValueError("Chat template returned empty prefix")
-        return [int(x) for x in prefix] + [int(x) for x in token_ids]
+        return build_protocol_input_ids(self.tokenizer, self.cfg.protocol, [int(x) for x in token_ids])
 
     def _sequence_cache_paths(self, token_ids: list[int]) -> tuple[Path, Path]:
         payload = ",".join(str(int(x)) for x in token_ids).encode("utf-8")

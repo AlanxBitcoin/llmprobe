@@ -13,6 +13,8 @@ FORM_SCHEMAS: dict[str, list[dict[str, Any]]] = {
     ],
     "single_word_hidden_state_form": [
         {"name": "word", "label": "Word", "type": "text", "default": "apple", "required": True},
+        {"name": "include_bos", "label": "Include BOS", "type": "checkbox", "default": True},
+        {"name": "include_assistant", "label": "Include Assistant", "type": "checkbox", "default": False},
     ],
     "single_word_top_100_neurons_form": [
         {"name": "word", "label": "Word", "type": "text", "default": "apple", "required": True},

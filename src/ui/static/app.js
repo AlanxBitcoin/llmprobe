@@ -63,6 +63,7 @@ function renderForm(fields) {
   fields.forEach((field) => {
     const wrap = document.createElement("div");
     wrap.className = "field";
+    wrap.dataset.fieldName = field.name || "";
     const label = document.createElement("label");
     label.textContent = field.label || field.name;
     wrap.appendChild(label);
@@ -75,27 +76,52 @@ function renderForm(fields) {
       const input = document.createElement("input");
       input.name = field.name;
       input.type = field.type || "text";
-      input.value = field.default ?? "";
+      if (input.type === "checkbox") {
+        input.checked = field.default !== false;
+      } else {
+        input.value = field.default ?? "";
+      }
       if (field.min !== undefined) input.min = field.min;
       if (field.required) input.required = true;
-      input.addEventListener("input", updateCommandPreview);
+      input.addEventListener(input.type === "checkbox" ? "change" : "input", updateCommandPreview);
       wrap.appendChild(input);
     }
     paramsForm.appendChild(wrap);
   });
+  updateBosAssistantVisibility();
 }
 
 function collectParams() {
   const params = {};
-  const data = new FormData(paramsForm);
-  for (const [key, value] of data.entries()) {
-    const field = (selectedAction.fields || []).find((item) => item.name === key);
-    params[key] = field && field.type === "number" ? Number(value) : value;
-  }
+  (selectedAction.fields || []).forEach((field) => {
+    if (field.type === "display") return;
+    const element = paramsForm.elements.namedItem(field.name);
+    if (!element) return;
+    if (field.type === "checkbox") {
+      params[field.name] = Boolean(element.checked);
+      return;
+    }
+    const raw = element.value;
+    params[field.name] = field.type === "number" ? Number(raw) : raw;
+  });
   return params;
 }
 
+function toDisplayProtocol(heatmap) {
+  if (heatmap && typeof heatmap.protocol === "string" && heatmap.protocol.length > 0) {
+    return heatmap.protocol;
+  }
+  if (heatmap && typeof heatmap.include_bos === "boolean") {
+    const bos = Boolean(heatmap.include_bos);
+    const assistant = Boolean(heatmap.include_assistant) && bos;
+    if (!bos) return "bos0_assistant0";
+    return assistant ? "bos1_assistant1" : "bos1_assistant0";
+  }
+  return "unknown";
+}
+
 function updateCommandPreview() {
+  updateBosAssistantVisibility();
   if (!selectedAction) {
     commandPreview.textContent = "";
     return;
@@ -106,6 +132,23 @@ function updateCommandPreview() {
     null,
     2,
   );
+}
+
+function updateBosAssistantVisibility() {
+  const bosInput = paramsForm.elements.namedItem("include_bos");
+  const assistantInput = paramsForm.elements.namedItem("include_assistant");
+  if (!bosInput || !assistantInput) return;
+
+  const assistantWrap = assistantInput.closest(".field");
+  if (!assistantWrap) return;
+
+  const bosEnabled = Boolean(bosInput.checked);
+  if (!bosEnabled) {
+    assistantInput.checked = false;
+    assistantWrap.style.display = "none";
+    return;
+  }
+  assistantWrap.style.display = "";
 }
 
 async function runSelectedAction() {
@@ -256,7 +299,7 @@ function renderHeatmapIntoDoc(doc, container, heatmap) {
   const cell = 10;
   const info = doc.createElement("div");
   info.className = "muted";
-  info.textContent = `word=${heatmap.word || ""}, source=${heatmap.cache_source || "unknown"}, logits=${heatmap.logits_source || "unknown"}`;
+  info.textContent = `word=${heatmap.word || ""}, source=${heatmap.cache_source || "unknown"}, protocol=${toDisplayProtocol(heatmap)}, logits=${heatmap.logits_source || "unknown"}`;
   container.appendChild(info);
   const hoverMeta = doc.createElement("div");
   hoverMeta.className = "muted";

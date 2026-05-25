@@ -116,7 +116,18 @@ def build_command_args(action: UIAction, params: dict[str, Any]) -> list[str]:
     if action.command == "run-single-word":
         return [action.command, str(params.get("word") or "apple")]
     if action.command == "run-single-word-hidden-state":
-        return [action.command, str(params.get("word") or "apple")]
+        include_bos = params.get("include_bos")
+        include_bos_flag = bool(include_bos) if include_bos is not None else True
+        include_assistant = params.get("include_assistant")
+        include_assistant_flag = bool(include_assistant) if include_assistant is not None else False
+        return [
+            action.command,
+            str(params.get("word") or "apple"),
+            "--include-bos",
+            "true" if include_bos_flag else "false",
+            "--include-assistant",
+            "true" if include_assistant_flag else "false",
+        ]
     if action.command == "run-single-word-top-100-neurons":
         return [
             action.command,
