@@ -958,7 +958,7 @@ function renderNeuronLogitsTableIntoDoc(doc, container, rows, payload) {
         placeholder.textContent = "Expand to render table...";
         details.appendChild(placeholder);
         let rendered = false;
-        details.addEventListener("toggle", () => {
+        const ensureRendered = () => {
           if (!details.open || rendered) return;
           try {
             placeholder.remove();
@@ -970,6 +970,11 @@ function renderNeuronLogitsTableIntoDoc(doc, container, rows, payload) {
             e.textContent = `Batch render failed: ${String(err && err.message ? err.message : err)}`;
             details.appendChild(e);
           }
+        };
+        details.addEventListener("toggle", ensureRendered);
+        // Some browser/page-refresh states miss `toggle`; keep a click fallback.
+        summary.addEventListener("click", () => {
+          setTimeout(ensureRendered, 0);
         });
         batchHost.appendChild(details);
       });

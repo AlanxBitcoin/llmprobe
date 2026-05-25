@@ -973,3 +973,60 @@ def build_ffn_post_silu_neuron_output_vector(
     with torch.no_grad():
         out = down_proj(one_hot)
     return out[0, 0, :].detach()
+
+
+def build_ffn_post_silu_neuron_output_matrix(
+    model,
+    *,
+    layer_idx: int,
+    neuron_indices: list[int],
+    activation_value: float,
+) -> torch.Tensor:
+    """
+    Batched variant of FFN post-SiLU neuron activation -> layer-output vectors.
+
+    Returns:
+      Tensor of shape [B, hidden_dim], where B=len(neuron_indices).
+    """
+    if not neuron_indices:
+        raise ValueError("neuron_indices must not be empty")
+    base_model = getattr(model, "model", None)
+    layers = getattr(base_model, "layers", None)
+    if layers is None:
+        layers = getattr(model, "layers", None)
+    if layers is None:
+        raise ValueError("Model does not expose decoder layers via `model.layers` or `layers`.")
+
+    n_layers = int(len(layers))
+    if not (0 <= int(layer_idx) < n_layers):
+        raise ValueError(f"layer_idx out of range: {layer_idx}, num_layers={n_layers}")
+
+    layer = layers[int(layer_idx)]
+    mlp = getattr(layer, "mlp", None)
+    if mlp is None:
+        raise ValueError(f"Layer {layer_idx} does not expose `mlp`.")
+    down_proj = getattr(mlp, "down_proj", None)
+    if down_proj is None:
+        raise ValueError(f"Layer {layer_idx} mlp does not expose `down_proj`.")
+
+    in_features = int(getattr(down_proj, "in_features", 0) or 0)
+    if in_features <= 0:
+        weight = getattr(down_proj, "weight", None)
+        if weight is None or weight.ndim != 2:
+            raise ValueError(f"Layer {layer_idx} down_proj has invalid weight.")
+        in_features = int(weight.shape[1])
+
+    clean_indices = [int(x) for x in neuron_indices]
+    for idx in clean_indices:
+        if not (0 <= idx < in_features):
+            raise ValueError(f"neuron_idx out of range: {idx}, ffn_dim={in_features}")
+
+    device = next(model.parameters()).device
+    dtype = next(model.parameters()).dtype
+    bsz = int(len(clean_indices))
+    one_hot = torch.zeros((bsz, 1, in_features), dtype=dtype, device=device)
+    for row, idx in enumerate(clean_indices):
+        one_hot[row, 0, idx] = float(activation_value)
+    with torch.no_grad():
+        out = down_proj(one_hot)  # [B,1,H]
+    return out[:, 0, :].detach()

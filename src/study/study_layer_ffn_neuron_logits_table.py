@@ -18,7 +18,7 @@ import torch
 from ..config import load_config
 from ..runtime_api import RuntimeRequest, get_runtime_api, start_llama_api
 from ..utils.logits import rank_vector_by_logits
-from ..probes.single_word_hidden_state_probe import run_single_ffn_neuron_from_layer_probe
+from ..probes.single_word_hidden_state_probe import run_multi_ffn_neurons_from_layer_probe
 from ..utils.utils import ensure_dir, write_csv
 
 
@@ -146,15 +146,20 @@ def run_study(
 
     top_k = 15
     batch_size = max(1, int(return_batch_size))
+    compute_batch_size = max(
+        1,
+        int((((cfg or {}).get("runtime") or {}).get("ffn_parallel_batch_size", 64))),
+    )
     rows: list[dict[str, Any]] = []
     batches: list[dict[str, Any]] = []
     current_batch: list[dict[str, Any]] = []
 
-    for neuron_id in range(ffn_dim):
-        transit, transit_error = run_single_ffn_neuron_from_layer_probe(
+    for start in range(0, int(ffn_dim), int(compute_batch_size)):
+        neuron_ids = list(range(start, min(start + int(compute_batch_size), int(ffn_dim))))
+        transit, transit_error = run_multi_ffn_neurons_from_layer_probe(
             config=cfg,
             layer_idx=layer_idx,
-            ffn_neuron_idx=neuron_id,
+            ffn_neuron_indices=neuron_ids,
             activation_value=float(activation_value),
             input_ids_override=input_ids,
             bundle_override=bundle,
@@ -176,38 +181,42 @@ def run_study(
                 "neuron_logits_rows": rows,
                 "ui_tasks": [{"name": "render_neuron_logits_table", "value_key": "neuron_logits_rows"}],
             }
-        final_vec = hidden_states[-1][0, -1, :].detach()
-        logits_rows = rank_vector_by_logits(
-            model=model,
-            vector=final_vec,
-            tokenizer=tokenizer,
-            top_k=top_k,
-            apply_final_norm=False,
-        )
-        row = {
-            "neuron_id": int(neuron_id),
-            "top_logits": logits_rows,
-        }
-        rows.append(row)
-        current_batch.append(row)
-        if len(current_batch) >= batch_size:
-            start_id = int(current_batch[0]["neuron_id"])
-            end_id = int(current_batch[-1]["neuron_id"])
-            batches.append(
-                {
-                    "batch_index": int(len(batches)),
-                    "start_neuron_id": start_id,
-                    "end_neuron_id": end_id,
-                    "rows": current_batch,
-                }
+        final_batch = hidden_states[-1].detach()  # [B,S,H]
+        bsz = int(final_batch.shape[0])
+        for local_idx in range(bsz):
+            neuron_id = int(neuron_ids[local_idx])
+            final_vec = final_batch[local_idx, -1, :]
+            logits_rows = rank_vector_by_logits(
+                model=model,
+                vector=final_vec,
+                tokenizer=tokenizer,
+                top_k=top_k,
+                apply_final_norm=False,
             )
+            row = {
+                "neuron_id": int(neuron_id),
+                "top_logits": logits_rows,
+            }
+            rows.append(row)
+            current_batch.append(row)
+            if len(current_batch) >= batch_size:
+                start_id = int(current_batch[0]["neuron_id"])
+                end_id = int(current_batch[-1]["neuron_id"])
+                batches.append(
+                    {
+                        "batch_index": int(len(batches)),
+                        "start_neuron_id": start_id,
+                        "end_neuron_id": end_id,
+                        "rows": current_batch,
+                    }
+                )
+                print(
+                    f"[layer_ffn_neuron_logits_table] batch_done index={len(batches)-1} range={start_id}-{end_id} processed={len(rows)}/{ffn_dim}"
+                )
+                current_batch = []
+        if len(rows) % 128 == 0 or len(rows) == ffn_dim:
             print(
-                f"[layer_ffn_neuron_logits_table] batch_done index={len(batches)-1} range={start_id}-{end_id} processed={neuron_id+1}/{ffn_dim}"
-            )
-            current_batch = []
-        if (neuron_id + 1) % 128 == 0 or neuron_id + 1 == ffn_dim:
-            print(
-                f"[layer_ffn_neuron_logits_table] progress processed={neuron_id+1}/{ffn_dim} kept={len(rows)}"
+                f"[layer_ffn_neuron_logits_table] progress processed={len(rows)}/{ffn_dim} kept={len(rows)} compute_batch_size={compute_batch_size}"
             )
     if current_batch:
         start_id = int(current_batch[0]["neuron_id"])
@@ -250,6 +259,7 @@ def run_study(
         "returned_rows": int(len(rows)),
         "filtered_out_rows": 0,
         "return_batch_size": int(batch_size),
+        "compute_batch_size": int(compute_batch_size),
         "neuron_logits_rows": rows,
         "neuron_logits_batches": batches,
         "history_csv_path": history_rel,

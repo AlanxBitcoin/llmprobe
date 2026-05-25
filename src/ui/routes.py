@@ -10,6 +10,7 @@ import csv
 import io
 import json
 import os
+import re
 import threading
 import time
 import traceback
@@ -94,6 +95,35 @@ def _ffn_history_files(project_root: str | Path) -> list[Path]:
     if not history_dir.exists():
         return []
     return sorted([p for p in history_dir.glob("*.csv") if p.is_file()], key=lambda p: p.stat().st_mtime, reverse=True)
+
+
+def _parse_ffn_history_name(name: str) -> dict[str, Any]:
+    """
+    Parse metadata from history filename.
+
+    Supported names:
+      - ffn_layer31_act10p0_YYYYMMDD_HHMMSS.csv
+      - ffn_layer31_act10p0_thr15p0_YYYYMMDD_HHMMSS.csv (legacy)
+    """
+    stem = Path(str(name)).stem
+    out: dict[str, Any] = {}
+    m = re.search(r"ffn_layer(\d+)_act([0-9]+(?:p[0-9]+)?)", stem)
+    if m:
+        try:
+            out["intervention_layer"] = int(m.group(1))
+        except ValueError:
+            pass
+        try:
+            out["activation_value"] = float(m.group(2).replace("p", "."))
+        except ValueError:
+            pass
+    m_thr = re.search(r"_thr([0-9]+(?:p[0-9]+)?)", stem)
+    if m_thr:
+        try:
+            out["threshold"] = float(m_thr.group(1).replace("p", "."))
+        except ValueError:
+            pass
+    return out
 
 
 def list_ffn_neuron_history(project_root: str | Path) -> dict[str, Any]:
@@ -184,6 +214,7 @@ def _load_ffn_neuron_history_result_from_csv(project_root: str | Path, csv_path:
         "neuron_logits_batches": batches,
         "ui_tasks": [{"name": "render_neuron_logits_table", "value_key": "neuron_logits_batches"}],
     }
+    heatmap.update(_parse_ffn_history_name(csv_path.name))
     return {
         "status": "ok",
         "return_code": 0,
