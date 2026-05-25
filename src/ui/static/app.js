@@ -39,6 +39,61 @@ runButton.insertAdjacentElement("afterend", historySelect);
 
 let chatMessages = [];
 
+// Common grammar/function words.
+const GRAMMAR_WORD_SET = new Set([
+  "the","a","an","this","that","these","those","some","any","each","every","all","both","either","neither","no",
+  "i","you","he","she","it","we","they","me","him","her","us","them","my","your","his","its","our","their",
+  "mine","yours","hers","ours","theirs","myself","yourself","himself","herself","itself","ourselves","themselves",
+  "is","am","are","was","were","be","being","been","do","does","did","have","has","had",
+  "can","could","may","might","must","shall","should","will","would",
+  "and","or","but","so","if","then","than","as","because","while","when","where","who","whom","which","what","why","how",
+  "to","of","in","on","at","for","from","with","by","about","into","over","after","before","between","under","through","during",
+  "not","n't"
+]);
+
+// High-frequency symbols / separators / chat-template tokens.
+const GRAMMAR_SYMBOL_SET = new Set([
+  " ", "\t", "\n", "\r", "\r\n",
+  ",", ".", ":", ";", "!", "?", "'", "\"", "`",
+  "-", "--", "—", "_", "/", "\\", "|", "~",
+  "(", ")", "[", "]", "{", "}",
+  "<", ">", "=", "+", "*", "&", "%", "$", "#", "@",
+  "<0x0A>", "<0x0D>", "\\n", "\\r", "\\r\\n",
+  "<|begin_of_text|>", "<|start_header_id|>", "<|end_header_id|>", "<|eot_id|>",
+  "assistant", "user", "system"
+]);
+
+function normalizeRawTokenForSymbolFilter(value) {
+  let t = String(value ?? "");
+  // Remove BPE boundary marks only; keep punctuation/newline semantics.
+  t = t.replace(/[Ġ▁]/g, "");
+  return t.toLowerCase().trim();
+}
+
+function normalizeWordTokenForGrammarFilter(value) {
+  let t = String(value ?? "").toLowerCase();
+  t = t.replace(/[Ġ▁\s\r\n\t]/g, "");
+  // Keep apostrophe for tokens like n't.
+  t = t.replace(/[^a-z']/g, "");
+  return t;
+}
+
+function isGrammarTokenLike(item) {
+  if (!item) return false;
+  const rawCandidates = [
+    normalizeRawTokenForSymbolFilter(item.text),
+    normalizeRawTokenForSymbolFilter(item.token),
+  ];
+  if (rawCandidates.some((c) => c && GRAMMAR_SYMBOL_SET.has(c))) {
+    return true;
+  }
+  const wordCandidates = [
+    normalizeWordTokenForGrammarFilter(item.text),
+    normalizeWordTokenForGrammarFilter(item.token),
+  ];
+  return wordCandidates.some((c) => c && GRAMMAR_WORD_SET.has(c));
+}
+
 function heatmapColorFromValue(value, threshold) {
   const safeThreshold = Math.max(0.000001, Number(threshold) || 1);
   const intensity = Math.min(1, Math.abs(Number(value) || 0) / safeThreshold);
@@ -847,6 +902,18 @@ function renderNeuronLogitsTableIntoDoc(doc, container, rows, payload) {
   filterControls.appendChild(thresholdLabel);
   filterControls.appendChild(thresholdInput);
   filterControls.appendChild(thresholdHint);
+  const grammarWrap = doc.createElement("span");
+  grammarWrap.style.marginLeft = "16px";
+  const grammarFilterInput = doc.createElement("input");
+  grammarFilterInput.type = "checkbox";
+  grammarFilterInput.id = `grammar_filter_${Date.now()}`;
+  const grammarFilterLabel = doc.createElement("label");
+  grammarFilterLabel.htmlFor = grammarFilterInput.id;
+  grammarFilterLabel.style.marginLeft = "4px";
+  grammarFilterLabel.textContent = "Grammar Token Filter";
+  grammarWrap.appendChild(grammarFilterInput);
+  grammarWrap.appendChild(grammarFilterLabel);
+  filterControls.appendChild(grammarWrap);
   container.appendChild(filterControls);
 
   function rowPassesThreshold(row) {
@@ -856,9 +923,18 @@ function renderNeuronLogitsTableIntoDoc(doc, container, rows, payload) {
     return Number.isFinite(v) && v >= threshold;
   }
 
+  function rowPassesGrammarFilter(row) {
+    if (!grammarFilterInput.checked) return true;
+    const top = Array.isArray(row && row.top_logits) ? row.top_logits : [];
+    if (top.length < 2) return true;
+    const firstTwoAllGrammar = isGrammarTokenLike(top[0]) && isGrammarTokenLike(top[1]);
+    // Filter out rows whose top-2 are both grammar tokens.
+    return !firstTwoAllGrammar;
+  }
+
   function buildTableForRows(tableRows) {
     const safeRows = Array.isArray(tableRows) ? tableRows : [];
-    const filteredRowsNow = safeRows.filter((r) => rowPassesThreshold(r));
+    const filteredRowsNow = safeRows.filter((r) => rowPassesThreshold(r) && rowPassesGrammarFilter(r));
     const effectiveTopK = Number.isFinite(topK) && topK > 0
       ? Math.floor(topK)
       : Math.max(...filteredRowsNow.map((r) => Array.isArray(r && r.top_logits) ? r.top_logits.length : 0), 0);
@@ -985,6 +1061,9 @@ function renderNeuronLogitsTableIntoDoc(doc, container, rows, payload) {
       threshold = Number.isFinite(next) ? next : 15.0;
       renderBatches();
     });
+    grammarFilterInput.addEventListener("change", () => {
+      renderBatches();
+    });
     renderBatches();
     return;
   }
@@ -1000,6 +1079,9 @@ function renderNeuronLogitsTableIntoDoc(doc, container, rows, payload) {
   thresholdInput.addEventListener("input", () => {
     const next = Number(thresholdInput.value);
     threshold = Number.isFinite(next) ? next : 15.0;
+    renderSingle();
+  });
+  grammarFilterInput.addEventListener("change", () => {
     renderSingle();
   });
   renderSingle();
