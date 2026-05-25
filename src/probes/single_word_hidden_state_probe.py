@@ -95,44 +95,67 @@ def _sparsify_abs_topk(vector_1d: torch.Tensor, keep_k: int) -> tuple[torch.Tens
 
 def run_starting_from_middle_layer_probe(
     *,
-    word: str,
+    word: str | None,
     config: dict[str, Any],
     start_layer_idx: int,
     hidden_state: torch.Tensor,
+    input_ids_override: torch.Tensor | None = None,
+    bundle_override=None,
 ) -> tuple[dict[str, Any] | None, str | None]:
     """Probe-layer transit function: study -> probe -> hooks.starting_from_middle_layer."""
     try:
-        api = _get_or_start_runtime_api(config)
-        bundle = api.get_bundle()
+        if bundle_override is not None:
+            bundle = bundle_override
+        else:
+            api = _get_or_start_runtime_api(config)
+            bundle = api.get_bundle()
         model = bundle.model
         tokenizer = bundle.tokenizer
         protocol = str(((config or {}).get("hidden_store") or {}).get("protocol", "bos1_assistant0"))
-        input_ids = _build_protocol_input_ids_from_word(tokenizer, word=str(word).strip(), protocol=protocol)
         device = next(model.parameters()).device
-        input_tensor = torch.tensor([input_ids], dtype=torch.long, device=device)
+        if input_ids_override is not None:
+            input_tensor = input_ids_override.to(device=device, dtype=torch.long)
+            if input_tensor.ndim == 1:
+                input_tensor = input_tensor.unsqueeze(0)
+        else:
+            if not word:
+                return None, "word is required when input_ids_override is not provided"
+            input_ids = _build_protocol_input_ids_from_word(tokenizer, word=str(word).strip(), protocol=protocol)
+            input_tensor = torch.tensor([input_ids], dtype=torch.long, device=device)
 
-        # Build full-sequence hidden state at the target layer first, then replace
-        # only the last-token vector. This preserves sequence context for tail layers.
-        with torch.no_grad():
-            ref_outputs = model(
-                input_ids=input_tensor,
-                output_hidden_states=True,
-                return_dict=True,
-                use_cache=False,
-            )
-        ref_hidden_states = getattr(ref_outputs, "hidden_states", None)
-        if ref_hidden_states is None:
-            return None, "Model did not return hidden_states for middle-layer continuation"
-        row_idx = int(start_layer_idx) + 1  # row0=embedding
-        if not (0 <= row_idx < len(ref_hidden_states)):
-            return None, f"start_layer_idx out of range for hidden_states: {start_layer_idx}"
-        start_hidden_full = ref_hidden_states[row_idx].detach().clone()
-        replacement = hidden_state.to(device=start_hidden_full.device, dtype=start_hidden_full.dtype).flatten()
-        if replacement.shape[0] != start_hidden_full.shape[-1]:
-            return None, (
-                f"Hidden size mismatch: expected {start_hidden_full.shape[-1]}, got {replacement.shape[0]}"
-            )
-        start_hidden_full[:, -1, :] = replacement.unsqueeze(0)
+        # Fast path for single-token override:
+        # if sequence length is 1, replacement fully defines that step,
+        # so we can skip the reference full forward.
+        if (
+            int(input_tensor.shape[0]) == 1
+            and int(input_tensor.shape[1]) == 1
+            and int(hidden_state.ndim) == 1
+        ):
+            replacement = hidden_state.to(device=device, dtype=next(model.parameters()).dtype).flatten()
+            start_hidden_full = replacement.view(1, 1, -1)
+        else:
+            # General path: build full-sequence hidden state at target layer first,
+            # then replace only the last-token vector.
+            with torch.no_grad():
+                ref_outputs = model(
+                    input_ids=input_tensor,
+                    output_hidden_states=True,
+                    return_dict=True,
+                    use_cache=False,
+                )
+            ref_hidden_states = getattr(ref_outputs, "hidden_states", None)
+            if ref_hidden_states is None:
+                return None, "Model did not return hidden_states for middle-layer continuation"
+            row_idx = int(start_layer_idx) + 1  # row0=embedding
+            if not (0 <= row_idx < len(ref_hidden_states)):
+                return None, f"start_layer_idx out of range for hidden_states: {start_layer_idx}"
+            start_hidden_full = ref_hidden_states[row_idx].detach().clone()
+            replacement = hidden_state.to(device=start_hidden_full.device, dtype=start_hidden_full.dtype).flatten()
+            if replacement.shape[0] != start_hidden_full.shape[-1]:
+                return None, (
+                    f"Hidden size mismatch: expected {start_hidden_full.shape[-1]}, got {replacement.shape[0]}"
+                )
+            start_hidden_full[:, -1, :] = replacement.unsqueeze(0)
 
         result = starting_from_middle_layer(
             model,

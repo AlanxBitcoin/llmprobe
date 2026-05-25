@@ -99,6 +99,8 @@ function renderForm(fields) {
         input.value = field.default ?? "";
       }
       if (field.min !== undefined) input.min = field.min;
+      if (field.max !== undefined) input.max = field.max;
+      if (field.step !== undefined) input.step = field.step;
       if (field.required) input.required = true;
       input.addEventListener(input.type === "checkbox" ? "change" : "input", updateCommandPreview);
       wrap.appendChild(input);
@@ -249,6 +251,11 @@ async function runSelectedAction() {
       body: JSON.stringify({ action_id: selectedAction.id, params }),
     });
     lastResult = await response.json();
+    if (lastResult && lastResult.status === "accepted" && lastResult.task_id) {
+      resultSummary.textContent = `Task accepted. task_id=${lastResult.task_id}. Waiting for server push...`;
+      await streamTaskUntilDone(lastResult.task_id, studyWindow);
+      return;
+    }
     renderResultInWindow(studyWindow, lastResult);
     if (lastResult && lastResult.status === "ok") {
       resultSummary.textContent = "Study finished. Results are shown in the popup window.";
@@ -267,6 +274,77 @@ async function runSelectedAction() {
     runButton.disabled = false;
     setStatus("Ready");
   }
+}
+
+async function pollTaskUntilDone(taskId, studyWindow) {
+  const tid = String(taskId || "").trim();
+  if (!tid) return;
+  for (;;) {
+    await new Promise((resolve) => setTimeout(resolve, 1000));
+    const resp = await fetch(`/api/tasks/${encodeURIComponent(tid)}`);
+    const payload = await resp.json();
+    if (!payload) continue;
+    if (payload.status === "running") {
+      const running = Number(payload.running_for_seconds || 0);
+      const remain = Number(payload.estimated_remaining_seconds || 0);
+      resultSummary.textContent = `Task running (${tid}) ... running=${running.toFixed(1)}s, remaining≈${remain.toFixed(1)}s`;
+      continue;
+    }
+    lastResult = payload;
+    renderResultInWindow(studyWindow, payload);
+    if (payload.status === "ok") {
+      resultSummary.textContent = "Study finished. Results are shown in the popup window.";
+    } else {
+      resultSummary.textContent = "Study failed. Check the popup window for details.";
+    }
+    return;
+  }
+}
+
+function streamTaskUntilDone(taskId, studyWindow) {
+  const tid = String(taskId || "").trim();
+  if (!tid || typeof EventSource === "undefined") {
+    return pollTaskUntilDone(taskId, studyWindow);
+  }
+  return new Promise((resolve) => {
+    let done = false;
+    const closeAndResolve = () => {
+      if (done) return;
+      done = true;
+      try { es.close(); } catch (_e) {}
+      resolve();
+    };
+    const es = new EventSource(`/api/tasks/${encodeURIComponent(tid)}/events`);
+    es.onmessage = (evt) => {
+      let payload = null;
+      try {
+        payload = JSON.parse(String(evt.data || "{}"));
+      } catch (_err) {
+        return;
+      }
+      if (!payload) return;
+      if (payload.status === "running") {
+        const running = Number(payload.running_for_seconds || 0);
+        const remain = Number(payload.estimated_remaining_seconds || 0);
+        resultSummary.textContent = `Task running (${tid}) ... running=${running.toFixed(1)}s, remaining≈${remain.toFixed(1)}s`;
+        return;
+      }
+      lastResult = payload;
+      renderResultInWindow(studyWindow, payload);
+      if (payload.status === "ok") {
+        resultSummary.textContent = "Study finished. Results are shown in the popup window.";
+      } else {
+        resultSummary.textContent = "Study failed. Check the popup window for details.";
+      }
+      closeAndResolve();
+    };
+    es.onerror = () => {
+      // Fallback to polling if SSE stream is interrupted/unavailable.
+      if (done) return;
+      try { es.close(); } catch (_e) {}
+      pollTaskUntilDone(tid, studyWindow).finally(closeAndResolve);
+    };
+  });
 }
 
 function renderResultInWindow(studyWindow, result) {
@@ -403,64 +481,80 @@ function renderHeatmapIntoDoc(doc, container, heatmap) {
   const tasks = Array.isArray(heatmap.ui_tasks) ? heatmap.ui_tasks : [];
   if (tasks.length > 0) {
     tasks.forEach((task) => {
-      const name = String((task && task.name) || "");
-      const valueKey = String((task && task.value_key) || "");
-      const value = valueKey ? heatmap[valueKey] : undefined;
-      if (name === "render_heatmap") {
-        // Support:
-        // 1) value_key -> 2D matrix
-        // 2) value_key -> [{title,matrix}, ...]
-        // 3) fallback to heatmap.heatmaps / heatmap.matrix
-        if (Array.isArray(value) && value.length > 0 && Array.isArray(value[0]) && Array.isArray(value[0][0]) === false) {
-          renderOneHeatmapIntoDoc(doc, container, value, "Hidden State Heatmap");
-          return;
-        }
-        if (Array.isArray(value) && value.length > 0 && value[0] && typeof value[0] === "object" && Array.isArray(value[0].matrix)) {
-          value.forEach((hm, idx) => {
+      try {
+        const name = String((task && task.name) || "");
+        const valueKey = String((task && task.value_key) || "");
+        const value = valueKey ? heatmap[valueKey] : undefined;
+        if (name === "render_heatmap") {
+          // Support:
+          // 1) value_key -> 2D matrix
+          // 2) value_key -> [{title,matrix}, ...]
+          // 3) fallback to heatmap.heatmaps / heatmap.matrix
+          if (Array.isArray(value) && value.length > 0 && Array.isArray(value[0]) && Array.isArray(value[0][0]) === false) {
+            renderOneHeatmapIntoDoc(doc, container, value, "Hidden State Heatmap");
+            return;
+          }
+          if (Array.isArray(value) && value.length > 0 && value[0] && typeof value[0] === "object" && Array.isArray(value[0].matrix)) {
+            value.forEach((hm, idx) => {
+              renderOneHeatmapIntoDoc(
+                doc,
+                container,
+                hm.matrix,
+                String(hm.title || `Heatmap ${idx + 1}`),
+              );
+            });
+            return;
+          }
+          const fallbackHeatmaps = Array.isArray(heatmap.heatmaps) && heatmap.heatmaps.length > 0
+            ? heatmap.heatmaps
+            : [{ title: "Hidden State Heatmap", matrix: heatmap.matrix }];
+          fallbackHeatmaps.forEach((hm, idx) => {
             renderOneHeatmapIntoDoc(
               doc,
               container,
-              hm.matrix,
-              String(hm.title || `Heatmap ${idx + 1}`),
+              hm && Array.isArray(hm.matrix) ? hm.matrix : [],
+              String((hm && hm.title) || `Heatmap ${idx + 1}`),
             );
           });
           return;
         }
-        const fallbackHeatmaps = Array.isArray(heatmap.heatmaps) && heatmap.heatmaps.length > 0
-          ? heatmap.heatmaps
-          : [{ title: "Hidden State Heatmap", matrix: heatmap.matrix }];
-        fallbackHeatmaps.forEach((hm, idx) => {
-          renderOneHeatmapIntoDoc(
+        if (name === "render_logits") {
+          renderTopLogitsTableIntoDoc(
             doc,
             container,
-            hm && Array.isArray(hm.matrix) ? hm.matrix : [],
-            String((hm && hm.title) || `Heatmap ${idx + 1}`),
+            Array.isArray(value) ? value : (heatmap.top_logits || []),
+            heatmap,
+            "Top 15 Logits (with cosine similarity)",
+            "logits_source",
+            "logits_error",
           );
-        });
-        return;
-      }
-      if (name === "render_logits") {
-        renderTopLogitsTableIntoDoc(
-          doc,
-          container,
-          Array.isArray(value) ? value : (heatmap.top_logits || []),
-          heatmap,
-          "Top 15 Logits (with cosine similarity)",
-          "logits_source",
-          "logits_error",
-        );
-        return;
-      }
-      if (name === "render_logits_top100") {
-        renderTopLogitsTableIntoDoc(
-          doc,
-          container,
-          Array.isArray(value) ? value : (heatmap.top_logits_top100 || []),
-          heatmap,
-          "Top 15 Logits (Penultimate Top-100 Intervention)",
-          "top_logits_top100_source",
-          "top_logits_top100_error",
-        );
+          return;
+        }
+        if (name === "render_logits_top100") {
+          renderTopLogitsTableIntoDoc(
+            doc,
+            container,
+            Array.isArray(value) ? value : (heatmap.top_logits_top100 || []),
+            heatmap,
+            "Top 15 Logits (Penultimate Top-100 Intervention)",
+            "top_logits_top100_source",
+            "top_logits_top100_error",
+          );
+          return;
+        }
+        if (name === "render_neuron_logits_table") {
+          renderNeuronLogitsTableIntoDoc(
+            doc,
+            container,
+            Array.isArray(value) ? value : [],
+            heatmap,
+          );
+        }
+      } catch (taskErr) {
+        const warn = doc.createElement("div");
+        warn.className = "error";
+        warn.textContent = `Task render failed: ${String(taskErr && taskErr.message ? taskErr.message : taskErr)}`;
+        container.appendChild(warn);
       }
     });
     return;
@@ -519,6 +613,7 @@ function renderOneHeatmapIntoDoc(doc, container, matrix, titleText) {
   const canvas = doc.createElement("canvas");
   canvas.width = cols * cell;
   canvas.height = rows * cell;
+  canvas.style.cursor = "crosshair";
   wrap.appendChild(canvas);
   container.appendChild(wrap);
   const ctx = canvas.getContext("2d");
@@ -543,8 +638,10 @@ function renderOneHeatmapIntoDoc(doc, container, matrix, titleText) {
 
   canvas.addEventListener("mousemove", (event) => {
     const rect = canvas.getBoundingClientRect();
-    const x = Math.floor((event.clientX - rect.left) / cell);
-    const y = Math.floor((event.clientY - rect.top) / cell);
+    const sx = rect.width > 0 ? (canvas.width / rect.width) : 1;
+    const sy = rect.height > 0 ? (canvas.height / rect.height) : 1;
+    const x = Math.floor(((event.clientX - rect.left) * sx) / cell);
+    const y = Math.floor(((event.clientY - rect.top) * sy) / cell);
     if (x < 0 || x >= cols || y < 0 || y >= rows) {
       hoverMeta.textContent = "Hover: X=-, Y=-";
       return;
@@ -620,6 +717,122 @@ function renderTopLogitsTableIntoDoc(doc, container, rows, heatmap, titleText, s
   table.appendChild(tbody);
   wrap.appendChild(table);
   container.appendChild(wrap);
+}
+
+function renderNeuronLogitsTableIntoDoc(doc, container, rows, payload) {
+  const title = doc.createElement("h3");
+  title.textContent = "Neuron -> Top 15 Logits Table";
+  container.appendChild(title);
+
+  const layer = Number(payload && payload.intervention_layer);
+  const activation = Number(payload && payload.activation_value);
+  const topK = Number(payload && payload.top_k);
+  const hiddenDim = Number(payload && payload.hidden_dim);
+  const threshold = Number(payload && payload.threshold);
+  const returnedRows = Number(payload && payload.returned_rows);
+  const filteredRows = Number(payload && payload.filtered_out_rows);
+  const meta = doc.createElement("div");
+  meta.className = "muted";
+  meta.textContent = `layer=${Number.isFinite(layer) ? layer : "-"}, activation=${Number.isFinite(activation) ? activation : "-"}, threshold=${Number.isFinite(threshold) ? threshold : "-"}, top_k=${Number.isFinite(topK) ? topK : "-"}, hidden_dim=${Number.isFinite(hiddenDim) ? hiddenDim : "-"}, returned=${Number.isFinite(returnedRows) ? returnedRows : "-"}, filtered=${Number.isFinite(filteredRows) ? filteredRows : "-"}`;
+  container.appendChild(meta);
+
+  const isBatched = Array.isArray(rows) && rows.length > 0 && rows[0] && typeof rows[0] === "object" && Array.isArray(rows[0].rows);
+  if (!Array.isArray(rows) || rows.length === 0) {
+    const empty = doc.createElement("div");
+    empty.className = "muted";
+    empty.textContent = "No neuron logits rows returned.";
+    container.appendChild(empty);
+    return;
+  }
+
+  function buildTableForRows(tableRows) {
+    const effectiveTopK = Number.isFinite(topK) && topK > 0
+      ? Math.floor(topK)
+      : Math.max(...tableRows.map((r) => Array.isArray(r && r.top_logits) ? r.top_logits.length : 0), 0);
+
+    const wrap = doc.createElement("div");
+    wrap.className = "scroll";
+    const table = doc.createElement("table");
+    table.style.tableLayout = "fixed";
+    table.style.width = "100%";
+    const thead = doc.createElement("thead");
+    const headerRow = doc.createElement("tr");
+    const first = doc.createElement("th");
+    first.textContent = "neuron_id";
+    first.style.width = "8ch";
+    headerRow.appendChild(first);
+    for (let rank = 1; rank <= effectiveTopK; rank += 1) {
+      const thText = doc.createElement("th");
+      thText.textContent = `r${rank}_text`;
+      thText.style.width = "20ch";
+      headerRow.appendChild(thText);
+      const thLogit = doc.createElement("th");
+      thLogit.textContent = `r${rank}_logit`;
+      thLogit.style.width = "12ch";
+      headerRow.appendChild(thLogit);
+    }
+    thead.appendChild(headerRow);
+    table.appendChild(thead);
+
+    const tbody = doc.createElement("tbody");
+    tableRows.forEach((row) => {
+      const tr = doc.createElement("tr");
+      const neuronCell = doc.createElement("td");
+      neuronCell.textContent = String((row && row.neuron_id) ?? "");
+      tr.appendChild(neuronCell);
+      const top = Array.isArray(row && row.top_logits) ? row.top_logits : [];
+      for (let idx = 0; idx < effectiveTopK; idx += 1) {
+        const item = top[idx] || {};
+        const tdText = doc.createElement("td");
+        tdText.textContent = String(item.text ?? "");
+        tdText.title = String(item.text ?? "");
+        tdText.style.maxWidth = "20ch";
+        tdText.style.whiteSpace = "nowrap";
+        tdText.style.overflow = "hidden";
+        tdText.style.textOverflow = "ellipsis";
+        tr.appendChild(tdText);
+        const tdLogit = doc.createElement("td");
+        const lv = item.logit;
+        tdLogit.textContent = typeof lv === "number" ? lv.toFixed(6) : "";
+        tr.appendChild(tdLogit);
+      }
+      tbody.appendChild(tr);
+    });
+    table.appendChild(tbody);
+    wrap.appendChild(table);
+    return wrap;
+  }
+
+  if (isBatched) {
+    const hint = doc.createElement("div");
+    hint.className = "muted";
+    hint.textContent = "Batched lazy render: expand one batch to load its table.";
+    container.appendChild(hint);
+    rows.forEach((batch, idx) => {
+      const batchRows = Array.isArray(batch && batch.rows) ? batch.rows : [];
+      const details = doc.createElement("details");
+      const summary = doc.createElement("summary");
+      const startId = Number(batch && batch.start_neuron_id);
+      const endId = Number(batch && batch.end_neuron_id);
+      summary.textContent = `Batch ${idx}: neuron ${Number.isFinite(startId) ? startId : "-"} - ${Number.isFinite(endId) ? endId : "-"} (${batchRows.length} rows)`;
+      details.appendChild(summary);
+      const placeholder = doc.createElement("div");
+      placeholder.className = "muted";
+      placeholder.textContent = "Expand to render table...";
+      details.appendChild(placeholder);
+      let rendered = false;
+      details.addEventListener("toggle", () => {
+        if (!details.open || rendered) return;
+        placeholder.remove();
+        details.appendChild(buildTableForRows(batchRows));
+        rendered = true;
+      });
+      container.appendChild(details);
+    });
+    return;
+  }
+
+  container.appendChild(buildTableForRows(rows));
 }
 
 function renderResult(result) {

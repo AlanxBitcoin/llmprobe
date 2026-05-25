@@ -37,7 +37,13 @@ FORM_SCHEMAS: dict[str, list[dict[str, Any]]] = {
     "single_word_top_100_neurons_form": [
         {"name": "word", "label": "Word", "type": "text", "default": "apple", "required": True},
         {"name": "top_k_neurons", "label": "Top K Neurons", "type": "number", "default": 100, "min": 1},
-        {"name": "intervention_layer", "label": "Intervention Layer", "type": "number", "default": 30, "min": 0},
+        {"name": "intervention_layer", "label": "Intervention Layer", "type": "number", "default": 30, "min": 0, "step": 1},
+    ],
+    "layer_neuron_logits_table_form": [
+        {"name": "intervention_layer", "label": "Layer", "type": "number", "default": 30, "min": 0, "step": 1},
+        {"name": "activation_value", "label": "Activation Value", "type": "number", "default": 10.0},
+        {"name": "threshold", "label": "Top1 Logit Threshold", "type": "number", "default": 15.0},
+        {"name": "return_batch_size", "label": "Return Batch Size", "type": "number", "default": 128, "min": 1},
     ],
     "color_words_form": [
         {"name": "word_file", "label": "Word file", "type": "text", "default": "data/color_words.txt"},

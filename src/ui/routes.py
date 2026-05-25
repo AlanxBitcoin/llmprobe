@@ -12,6 +12,7 @@ import os
 import threading
 import time
 import traceback
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -26,6 +27,8 @@ from .result_render import collect_recent_artifacts, newest_csv_preview
 _RUN_LOCK = threading.Lock()
 _RUN_STATE: dict[str, Any] = {"action_id": None, "started_at": 0.0, "eta_seconds": 0.0}
 _ACTION_DURATION_SECONDS: dict[str, float] = {}
+_TASKS_LOCK = threading.Lock()
+_TASKS: dict[str, dict[str, Any]] = {}
 
 
 def _batch_cache_path(project_root: Path) -> Path:
@@ -321,6 +324,170 @@ def execute_ui_action(
         _RUN_STATE["started_at"] = 0.0
         _RUN_STATE["eta_seconds"] = 0.0
         _RUN_LOCK.release()
+
+
+def start_ui_action_task(
+    action_id: str,
+    params: dict[str, Any] | None = None,
+    *,
+    project_root: str | Path,
+    config_path: str | Path,
+    timeout_seconds: int = 0,
+) -> dict[str, Any]:
+    """Start a background UI action task and return task id immediately."""
+    params = params or {}
+    root = Path(project_root).resolve()
+    action = get_ui_action(action_id)
+    command_args = build_command_args(action, params)
+    cmd = ["inprocess", "src.main", "--config", str(config_path), *command_args]
+    started_at = time.time()
+    eta_seconds = _estimate_duration_seconds(action.id)
+
+    if not _RUN_LOCK.acquire(blocking=False):
+        running_for = max(0.0, time.time() - float(_RUN_STATE.get("started_at") or time.time()))
+        current_eta = float(_RUN_STATE.get("eta_seconds") or 0.0)
+        remaining = max(0.0, current_eta - running_for)
+        return {
+            "status": "busy",
+            "action": action.to_dict(),
+            "command": cmd,
+            "task_id": None,
+            "running_action_id": _RUN_STATE.get("action_id"),
+            "running_for_seconds": round(running_for, 1),
+            "estimated_remaining_seconds": round(remaining, 1),
+            "started_at": started_at,
+            "finished_at": time.time(),
+        }
+
+    task_id = uuid.uuid4().hex
+    with _TASKS_LOCK:
+        _TASKS[task_id] = {
+            "status": "running",
+            "task_id": task_id,
+            "action_id": action.id,
+            "started_at": started_at,
+            "updated_at": started_at,
+            "eta_seconds": eta_seconds,
+            "result": None,
+            "error": None,
+        }
+    _RUN_STATE["action_id"] = action.id
+    _RUN_STATE["started_at"] = started_at
+    _RUN_STATE["eta_seconds"] = eta_seconds
+
+    def _worker() -> None:
+        stdout_buffer = io.StringIO()
+        stderr_buffer = io.StringIO()
+        try:
+            if action.command == "run-single-word-hidden-state-batch-average":
+                upsert_batch_mapping(
+                    root,
+                    batch_name=str(params.get("batch_name") or ""),
+                    words_csv=str(params.get("words_csv") or ""),
+                )
+            with _working_directory(root), contextlib.redirect_stdout(stdout_buffer), contextlib.redirect_stderr(stderr_buffer):
+                if timeout_seconds > 0:
+                    print(
+                        f"[ui] timeout_seconds={timeout_seconds} is ignored in in-process mode.",
+                        file=stderr_buffer,
+                    )
+                command_result = run_cli_command(config_path=config_path, command_args=command_args)
+
+            if action.command in {
+                "run-single-word-hidden-state",
+                "run-single-word-hidden-state-batch-average",
+                "run-single-word-top-100-neurons",
+                "run-layer-neuron-logits-table",
+            }:
+                artifacts = []
+                csv_preview = None
+            else:
+                output_root = root / "data" / "outputs"
+                artifacts = collect_recent_artifacts(output_root, since_timestamp=started_at)
+                csv_preview = newest_csv_preview(artifacts)
+
+            result = {
+                "status": "ok",
+                "action": action.to_dict(),
+                "command": cmd,
+                "return_code": 0,
+                "stdout": stdout_buffer.getvalue()[-12000:],
+                "stderr": stderr_buffer.getvalue()[-12000:],
+                "artifacts": artifacts,
+                "csv_preview": csv_preview,
+                "hidden_state_heatmap": (command_result or {}).get("hidden_state_heatmap") if isinstance(command_result, dict) else None,
+                "started_at": started_at,
+                "finished_at": time.time(),
+                "task_id": task_id,
+            }
+            with _TASKS_LOCK:
+                if task_id in _TASKS:
+                    _TASKS[task_id]["status"] = "ok"
+                    _TASKS[task_id]["updated_at"] = time.time()
+                    _TASKS[task_id]["result"] = result
+        except Exception as exc:  # noqa: BLE001
+            result = {
+                "status": "error",
+                "action": action.to_dict(),
+                "command": cmd,
+                "return_code": None,
+                "stdout": stdout_buffer.getvalue()[-12000:],
+                "stderr": (stderr_buffer.getvalue() + "".join(traceback.format_exception(exc)))[-12000:],
+                "artifacts": [],
+                "csv_preview": None,
+                "started_at": started_at,
+                "finished_at": time.time(),
+                "task_id": task_id,
+            }
+            with _TASKS_LOCK:
+                if task_id in _TASKS:
+                    _TASKS[task_id]["status"] = "error"
+                    _TASKS[task_id]["updated_at"] = time.time()
+                    _TASKS[task_id]["result"] = result
+                    _TASKS[task_id]["error"] = str(exc)
+        finally:
+            elapsed = max(0.0, time.time() - started_at)
+            _remember_duration_seconds(action.id, elapsed)
+            _RUN_STATE["action_id"] = None
+            _RUN_STATE["started_at"] = 0.0
+            _RUN_STATE["eta_seconds"] = 0.0
+            _RUN_LOCK.release()
+
+    thread = threading.Thread(target=_worker, name=f"ui-task-{task_id[:8]}", daemon=True)
+    thread.start()
+    return {
+        "status": "accepted",
+        "task_id": task_id,
+        "action": action.to_dict(),
+        "command": cmd,
+        "started_at": started_at,
+        "estimated_remaining_seconds": round(eta_seconds, 1),
+    }
+
+
+def get_ui_action_task(task_id: str) -> dict[str, Any]:
+    with _TASKS_LOCK:
+        task = _TASKS.get(str(task_id))
+    if not task:
+        return {"status": "not_found", "task_id": str(task_id)}
+
+    status = str(task.get("status") or "running")
+    if status in {"ok", "error"} and isinstance(task.get("result"), dict):
+        return dict(task["result"])
+
+    started_at = float(task.get("started_at") or time.time())
+    eta_seconds = float(task.get("eta_seconds") or 0.0)
+    running_for = max(0.0, time.time() - started_at)
+    remaining = max(0.0, eta_seconds - running_for)
+    return {
+        "status": "running",
+        "task_id": str(task_id),
+        "action_id": task.get("action_id"),
+        "started_at": started_at,
+        "running_for_seconds": round(running_for, 1),
+        "estimated_remaining_seconds": round(remaining, 1),
+        "updated_at": float(task.get("updated_at") or started_at),
+    }
 
 
 def parse_json_body(raw_body: bytes) -> dict[str, Any]:

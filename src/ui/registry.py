@@ -58,6 +58,14 @@ UI_ACTIONS: dict[str, UIAction] = {
         command="run-single-word-top-100-neurons",
         form_schema="single_word_top_100_neurons_form",
     ),
+    "study_layer_neuron_logits_table": UIAction(
+        id="study_layer_neuron_logits_table",
+        label="Layer Neuron Logits Table",
+        description="For one layer, activate one neuron (value=10) at a time and collect top15 logits.",
+        kind="study",
+        command="run-layer-neuron-logits-table",
+        form_schema="layer_neuron_logits_table_form",
+    ),
     "study_single_word": UIAction(
         id="study_single_word",
         label="Single Word",
@@ -150,13 +158,31 @@ def build_command_args(action: UIAction, params: dict[str, Any]) -> list[str]:
             "true" if include_assistant_flag else "false",
         ]
     if action.command == "run-single-word-top-100-neurons":
+        top_k_neurons = params.get("top_k_neurons")
+        intervention_layer = params.get("intervention_layer")
         return [
             action.command,
             str(params.get("word") or "apple"),
             "--top-k-neurons",
-            str(params.get("top_k_neurons") or 100),
+            str(100 if top_k_neurons is None else top_k_neurons),
             "--intervention-layer",
-            str(params.get("intervention_layer") or 30),
+            str(30 if intervention_layer is None else intervention_layer),
+        ]
+    if action.command == "run-layer-neuron-logits-table":
+        intervention_layer = params.get("intervention_layer")
+        activation_value = params.get("activation_value")
+        threshold = params.get("threshold")
+        return_batch_size = params.get("return_batch_size")
+        return [
+            action.command,
+            "--intervention-layer",
+            str(30 if intervention_layer is None else intervention_layer),
+            "--activation-value",
+            str(10.0 if activation_value is None else activation_value),
+            "--threshold",
+            str(15.0 if threshold is None else threshold),
+            "--return-batch-size",
+            str(128 if return_batch_size is None else return_batch_size),
         ]
     if action.command == "run-color-words-experiment":
         return [

@@ -8,12 +8,21 @@ from __future__ import annotations
 import json
 import mimetypes
 import os
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 from urllib.parse import unquote, urlparse
 
-from .routes import actions_payload, batch_options_payload, execute_chat_completion, execute_ui_action, parse_json_body
+from .routes import (
+    actions_payload,
+    batch_options_payload,
+    execute_chat_completion,
+    execute_ui_action,
+    get_ui_action_task,
+    parse_json_body,
+    start_ui_action_task,
+)
 
 
 DEFAULT_HOST = "127.0.0.1"
@@ -42,7 +51,8 @@ def run_ui_server(
 
 def _run_fastapi_server(project_root: Path, config_path: Path, *, host: str, port: int) -> None:
     from fastapi import Body, FastAPI
-    from fastapi.responses import FileResponse, JSONResponse
+    from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+    import asyncio
     import uvicorn
 
     template_dir = project_root / "src" / "ui" / "templates"
@@ -71,20 +81,58 @@ def _run_fastapi_server(project_root: Path, config_path: Path, *, host: str, por
         payload = payload or {}
         action_id = str(payload.get("action_id") or "")
         params = payload.get("params") or {}
-        result = execute_ui_action(
-            action_id=action_id,
-            params=params,
-            project_root=project_root,
-            config_path=config_path,
-            timeout_seconds=int(payload.get("timeout_seconds") or 0),
-        )
+        if action_id == "study_layer_neuron_logits_table":
+            result = start_ui_action_task(
+                action_id=action_id,
+                params=params,
+                project_root=project_root,
+                config_path=config_path,
+                timeout_seconds=int(payload.get("timeout_seconds") or 0),
+            )
+        else:
+            result = execute_ui_action(
+                action_id=action_id,
+                params=params,
+                project_root=project_root,
+                config_path=config_path,
+                timeout_seconds=int(payload.get("timeout_seconds") or 0),
+            )
         if result.get("status") == "ok":
             status = 200
+        elif result.get("status") == "accepted":
+            status = 202
         elif result.get("status") == "busy":
             status = 409
         else:
             status = 500
         return JSONResponse(result, status_code=status)
+
+    @app.get("/api/tasks/{task_id}")
+    async def api_task(task_id: str):
+        result = get_ui_action_task(task_id)
+        if result.get("status") in {"ok", "running"}:
+            status = 200
+        elif result.get("status") == "not_found":
+            status = 404
+        elif result.get("status") == "error":
+            status = 500
+        else:
+            status = 200
+        return JSONResponse(result, status_code=status)
+
+    @app.get("/api/tasks/{task_id}/events")
+    async def api_task_events(task_id: str):
+        async def event_gen():
+            # Push snapshot every second until task reaches terminal state.
+            while True:
+                payload = get_ui_action_task(task_id)
+                yield f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
+                status = str(payload.get("status") or "")
+                if status in {"ok", "error", "not_found"}:
+                    break
+                await asyncio.sleep(1.0)
+
+        return StreamingResponse(event_gen(), media_type="text/event-stream")
 
     @app.post("/api/chat")
     async def api_chat(payload: dict[str, Any] | None = Body(default=None)):
@@ -158,6 +206,36 @@ def _make_handler(project_root: Path, config_path: Path) -> type[BaseHTTPRequest
             if path == "/api/batches":
                 self._send_json(batch_options_payload(project_root))
                 return
+            if path.startswith("/api/tasks/") and path.endswith("/events"):
+                # Built-in server fallback: emulate SSE stream.
+                task_id = unquote(path.removeprefix("/api/tasks/").removesuffix("/events")).strip("/")
+                self.send_response(200)
+                self.send_header("Content-Type", "text/event-stream")
+                self.send_header("Cache-Control", "no-cache")
+                self.send_header("Connection", "keep-alive")
+                self.end_headers()
+                while True:
+                    payload = get_ui_action_task(task_id)
+                    chunk = f"data: {json.dumps(payload, ensure_ascii=False)}\n\n".encode("utf-8")
+                    self.wfile.write(chunk)
+                    self.wfile.flush()
+                    status = str(payload.get("status") or "")
+                    if status in {"ok", "error", "not_found"}:
+                        break
+                    time.sleep(1.0)
+                return
+            if path.startswith("/api/tasks/"):
+                task_id = unquote(path.removeprefix("/api/tasks/"))
+                result = get_ui_action_task(task_id)
+                if result.get("status") in {"ok", "running"}:
+                    self._send_json(result, status=200)
+                elif result.get("status") == "not_found":
+                    self._send_json(result, status=404)
+                elif result.get("status") == "error":
+                    self._send_json(result, status=500)
+                else:
+                    self._send_json(result, status=200)
+                return
             if path.startswith("/static/"):
                 rel = unquote(path.removeprefix("/static/"))
                 self._send_file(_safe_join(static_dir, rel))
@@ -188,15 +266,26 @@ def _make_handler(project_root: Path, config_path: Path) -> type[BaseHTTPRequest
                 else:
                     action_id = str(payload.get("action_id") or "")
                     params = payload.get("params") or {}
-                    result = execute_ui_action(
-                        action_id=action_id,
-                        params=params,
-                        project_root=project_root,
-                        config_path=config_path,
-                        timeout_seconds=int(payload.get("timeout_seconds") or 0),
-                    )
+                    if action_id == "study_layer_neuron_logits_table":
+                        result = start_ui_action_task(
+                            action_id=action_id,
+                            params=params,
+                            project_root=project_root,
+                            config_path=config_path,
+                            timeout_seconds=int(payload.get("timeout_seconds") or 0),
+                        )
+                    else:
+                        result = execute_ui_action(
+                            action_id=action_id,
+                            params=params,
+                            project_root=project_root,
+                            config_path=config_path,
+                            timeout_seconds=int(payload.get("timeout_seconds") or 0),
+                        )
                 if result.get("status") == "ok":
                     self._send_json(result, status=200)
+                elif result.get("status") == "accepted":
+                    self._send_json(result, status=202)
                 elif result.get("status") == "busy":
                     self._send_json(result, status=409)
                 else:
