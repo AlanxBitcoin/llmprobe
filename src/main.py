@@ -50,6 +50,7 @@ from src.probes.attribute_probe import (
 from src.runtime_api import start_llama_api
 from src.study import (
     run_attribute_probe_study,
+    run_layer_ffn_neuron_logits_table_study,
     run_layer_neuron_logits_table_study,
     run_linear_probe_study,
     run_single_word_hidden_state_study,
@@ -163,10 +164,17 @@ def build_parser() -> argparse.ArgumentParser:
         "run-layer-neuron-logits-table",
         help="For one layer, activate one neuron (value=10) at a time and rank top-15 logits.",
     )
-    neuron_scan.add_argument("--intervention-layer", type=int, default=30, help="Decoder layer index (default: 30)")
+    neuron_scan.add_argument("--intervention-layer", type=int, default=30, help="Decoder layer number, 1-based (default: 30)")
     neuron_scan.add_argument("--activation-value", type=float, default=10.0, help="Neuron activation value (default: 10.0)")
-    neuron_scan.add_argument("--threshold", type=float, default=15.0, help="Filter threshold on top1 logit (default: 15.0)")
     neuron_scan.add_argument("--return-batch-size", type=int, default=128, help="Rows per batch in returned payload (default: 128)")
+
+    ffn_neuron_scan = subparsers.add_parser(
+        "run-layer-ffn-neuron-logits-table",
+        help="For one layer, activate one post-SiLU FFN neuron at a time and rank top-15 logits.",
+    )
+    ffn_neuron_scan.add_argument("--intervention-layer", type=int, default=30, help="Decoder layer number, 1-based (default: 30)")
+    ffn_neuron_scan.add_argument("--activation-value", type=float, default=10.0, help="FFN neuron activation value (default: 10.0)")
+    ffn_neuron_scan.add_argument("--return-batch-size", type=int, default=128, help="Rows per batch in returned payload (default: 128)")
 
     combo = subparsers.add_parser("run-word-sum", help="Analyze the layer-8 summed representation of two or more words")
     combo.add_argument("words", nargs="+", help="Two or more bare English words")
@@ -304,7 +312,16 @@ def _execute_parsed_args(args: argparse.Namespace, config: dict[str, Any]) -> di
         heatmap = run_layer_neuron_logits_table_study(
             intervention_layer=int(args.intervention_layer),
             activation_value=float(args.activation_value),
-            threshold=float(args.threshold),
+            return_batch_size=int(args.return_batch_size),
+            config=config,
+            config_path=args.config,
+        )
+        return {"hidden_state_heatmap": heatmap}
+
+    if args.command == "run-layer-ffn-neuron-logits-table":
+        heatmap = run_layer_ffn_neuron_logits_table_study(
+            intervention_layer=int(args.intervention_layer),
+            activation_value=float(args.activation_value),
             return_batch_size=int(args.return_batch_size),
             config=config,
             config_path=args.config,

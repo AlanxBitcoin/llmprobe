@@ -6,6 +6,7 @@ from __future__ import annotations
 # - Keep execution orchestration in UI layer, not model internals.
 
 import contextlib
+import csv
 import io
 import json
 import os
@@ -81,6 +82,156 @@ def batch_options_payload(project_root: str | Path) -> dict[str, Any]:
 
 def actions_payload() -> dict[str, Any]:
     return {"actions": list_ui_actions()}
+
+
+def _ffn_history_dir(project_root: str | Path) -> Path:
+    root = Path(project_root).resolve()
+    return (root / "data" / "outputs" / "layer_ffn_neuron_logits_table" / "history").resolve()
+
+
+def _ffn_history_files(project_root: str | Path) -> list[Path]:
+    history_dir = _ffn_history_dir(project_root)
+    if not history_dir.exists():
+        return []
+    return sorted([p for p in history_dir.glob("*.csv") if p.is_file()], key=lambda p: p.stat().st_mtime, reverse=True)
+
+
+def list_ffn_neuron_history(project_root: str | Path) -> dict[str, Any]:
+    files = _ffn_history_files(project_root)
+    items: list[dict[str, Any]] = []
+    for path in files:
+        st = path.stat()
+        items.append(
+            {
+                "name": path.name,
+                "size_bytes": int(st.st_size),
+                "mtime": float(st.st_mtime),
+            }
+        )
+    return {"status": "ok", "items": items}
+
+
+def _load_ffn_neuron_history_result_from_csv(project_root: str | Path, csv_path: Path) -> dict[str, Any]:
+    root = Path(project_root).resolve()
+    if not csv_path.exists() or not csv_path.is_file():
+        return {
+            "status": "error",
+            "return_code": None,
+            "stdout": "",
+            "stderr": "History CSV not found.",
+            "artifacts": [],
+            "csv_preview": None,
+            "hidden_state_heatmap": {"ok": False, "reason": "history_not_found", "ui_tasks": []},
+            "started_at": time.time(),
+            "finished_at": time.time(),
+        }
+
+    with csv_path.open("r", encoding="utf-8", newline="") as fh:
+        reader = csv.DictReader(fh)
+        records = list(reader)
+    rank_cols = [c for c in (records[0].keys() if records else []) if c.startswith("rank_") and c.endswith("_text")]
+    top_k = len(rank_cols)
+    rows: list[dict[str, Any]] = []
+    for rec in records:
+        neuron_id = int(rec.get("neuron_id", "-1"))
+        top_logits: list[dict[str, Any]] = []
+        for rank in range(1, top_k + 1):
+            txt = str(rec.get(f"rank_{rank}_text", ""))
+            logit_raw = rec.get(f"rank_{rank}_logit", "")
+            try:
+                logit_val = float(logit_raw)
+            except (TypeError, ValueError):
+                logit_val = 0.0
+            top_logits.append({"rank": rank, "text": txt, "logit": logit_val})
+        rows.append({"neuron_id": neuron_id, "top_logits": top_logits})
+
+    batch_size = 128
+    batches: list[dict[str, Any]] = []
+    for i in range(0, len(rows), batch_size):
+        chunk = rows[i:i + batch_size]
+        if not chunk:
+            continue
+        batches.append(
+            {
+                "batch_index": len(batches),
+                "start_neuron_id": int(chunk[0]["neuron_id"]),
+                "end_neuron_id": int(chunk[-1]["neuron_id"]),
+                "rows": chunk,
+            }
+        )
+
+    output_root = (root / "data" / "outputs").resolve()
+    rel = csv_path.resolve().relative_to(output_root)
+    artifact = {
+        "path": str(csv_path.resolve()),
+        "relative_path": str(rel).replace("\\", "/"),
+        "type": "csv",
+        "size_bytes": int(csv_path.stat().st_size),
+        "mtime": float(csv_path.stat().st_mtime),
+        "url": f"/outputs/{str(rel).replace('\\', '/')}",
+    }
+    heatmap = {
+        "ok": True,
+        "study": "layer_ffn_neuron_single_activation_logits",
+        "neuron_kind": "ffn_post_silu",
+        "top_k": int(top_k),
+        "hidden_dim": int(len(rows)),
+        "returned_rows": int(len(rows)),
+        "filtered_out_rows": 0,
+        "return_batch_size": int(batch_size),
+        "history_csv_path": str(csv_path.resolve().as_posix()),
+        "neuron_logits_rows": rows,
+        "neuron_logits_batches": batches,
+        "ui_tasks": [{"name": "render_neuron_logits_table", "value_key": "neuron_logits_batches"}],
+    }
+    return {
+        "status": "ok",
+        "return_code": 0,
+        "stdout": "",
+        "stderr": "",
+        "artifacts": [artifact],
+        "csv_preview": newest_csv_preview([artifact]),
+        "hidden_state_heatmap": heatmap,
+        "started_at": time.time(),
+        "finished_at": time.time(),
+    }
+
+
+def load_ffn_neuron_history_result(project_root: str | Path, *, name: str | None = None) -> dict[str, Any]:
+    files = _ffn_history_files(project_root)
+    if not files:
+        return {
+            "status": "error",
+            "return_code": None,
+            "stdout": "",
+            "stderr": "No FFN neuron history found yet.",
+            "artifacts": [],
+            "csv_preview": None,
+            "hidden_state_heatmap": {"ok": False, "reason": "history_not_found", "ui_tasks": []},
+            "started_at": time.time(),
+            "finished_at": time.time(),
+        }
+    if name:
+        target_name = str(name).strip()
+        hit = next((p for p in files if p.name == target_name), None)
+        if hit is None:
+            return {
+                "status": "error",
+                "return_code": None,
+                "stdout": "",
+                "stderr": f"History CSV not found: {target_name}",
+                "artifacts": [],
+                "csv_preview": None,
+                "hidden_state_heatmap": {"ok": False, "reason": "history_not_found", "ui_tasks": []},
+                "started_at": time.time(),
+                "finished_at": time.time(),
+            }
+        return _load_ffn_neuron_history_result_from_csv(project_root, hit)
+    return _load_ffn_neuron_history_result_from_csv(project_root, files[0])
+
+
+def load_latest_ffn_neuron_history_result(project_root: str | Path) -> dict[str, Any]:
+    return load_ffn_neuron_history_result(project_root, name=None)
 
 
 def execute_chat_completion(
@@ -284,6 +435,7 @@ def execute_ui_action(
             "run-single-word-hidden-state",
             "run-single-word-hidden-state-batch-average",
             "run-single-word-top-100-neurons",
+            "run-layer-ffn-neuron-logits-table",
         }:
             artifacts = []
             csv_preview = None
@@ -398,6 +550,7 @@ def start_ui_action_task(
                 "run-single-word-hidden-state-batch-average",
                 "run-single-word-top-100-neurons",
                 "run-layer-neuron-logits-table",
+                "run-layer-ffn-neuron-logits-table",
             }:
                 artifacts = []
                 csv_preview = None

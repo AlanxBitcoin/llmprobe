@@ -921,3 +921,55 @@ def _patch_hidden_tensor(current_hidden: torch.Tensor, replacement_hidden: torch
         return patched
 
     raise ValueError(f"Unsupported replacement hidden_state ndim={replacement.ndim}, expected 1/2/3")
+
+
+def build_ffn_post_silu_neuron_output_vector(
+    model,
+    *,
+    layer_idx: int,
+    neuron_idx: int,
+    activation_value: float,
+) -> torch.Tensor:
+    """
+    Build decoder hidden-size vector contributed by one FFN post-SiLU neuron.
+
+    Definition used here:
+    - FFN neuron is at post-silu-and-gated intermediate tensor (MLP hidden width).
+    - We activate exactly one intermediate neuron with `activation_value`, others zero.
+    - Then pass through `down_proj` to obtain decoder hidden-size output vector.
+    """
+    base_model = getattr(model, "model", None)
+    layers = getattr(base_model, "layers", None)
+    if layers is None:
+        layers = getattr(model, "layers", None)
+    if layers is None:
+        raise ValueError("Model does not expose decoder layers via `model.layers` or `layers`.")
+
+    n_layers = int(len(layers))
+    if not (0 <= int(layer_idx) < n_layers):
+        raise ValueError(f"layer_idx out of range: {layer_idx}, num_layers={n_layers}")
+
+    layer = layers[int(layer_idx)]
+    mlp = getattr(layer, "mlp", None)
+    if mlp is None:
+        raise ValueError(f"Layer {layer_idx} does not expose `mlp`.")
+    down_proj = getattr(mlp, "down_proj", None)
+    if down_proj is None:
+        raise ValueError(f"Layer {layer_idx} mlp does not expose `down_proj`.")
+
+    in_features = int(getattr(down_proj, "in_features", 0) or 0)
+    if in_features <= 0:
+        weight = getattr(down_proj, "weight", None)
+        if weight is None or weight.ndim != 2:
+            raise ValueError(f"Layer {layer_idx} down_proj has invalid weight.")
+        in_features = int(weight.shape[1])
+    if not (0 <= int(neuron_idx) < in_features):
+        raise ValueError(f"neuron_idx out of range: {neuron_idx}, ffn_dim={in_features}")
+
+    device = next(model.parameters()).device
+    dtype = next(model.parameters()).dtype
+    one_hot = torch.zeros((1, 1, in_features), dtype=dtype, device=device)
+    one_hot[0, 0, int(neuron_idx)] = float(activation_value)
+    with torch.no_grad():
+        out = down_proj(one_hot)
+    return out[0, 0, :].detach()

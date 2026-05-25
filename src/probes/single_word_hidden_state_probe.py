@@ -10,7 +10,7 @@ import torch
 
 from ..runtime_api import RuntimeRequest, get_runtime_api, start_llama_api
 from ..utils.extract_hidden import extract_single_word_hidden_matrix_store_first
-from ..utils.hooks import starting_from_middle_layer
+from ..utils.hooks import build_ffn_post_silu_neuron_output_vector, starting_from_middle_layer
 from ..utils.logits import rank_vector_logits_and_cosine
 from ..utils.token_hidden_store import build_protocol_input_ids, parse_token_ids_with_bos_alias
 
@@ -241,3 +241,42 @@ def rank_logits_after_penultimate_topk_intervention(
         return rows, meta, "probe_intervention", None
     except Exception as exc:  # noqa: BLE001
         return [], {}, "error", str(exc)
+
+
+def run_single_ffn_neuron_from_layer_probe(
+    *,
+    config: dict[str, Any],
+    layer_idx: int,
+    ffn_neuron_idx: int,
+    activation_value: float,
+    input_ids_override: torch.Tensor | None = None,
+    bundle_override=None,
+) -> tuple[dict[str, Any] | None, str | None]:
+    """
+    Probe-layer transit:
+    1) Build layer-output hidden vector from one post-SiLU FFN neuron activation.
+    2) Continue from the same decoder layer to the end via starting_from_middle_layer.
+    """
+    try:
+        if bundle_override is not None:
+            bundle = bundle_override
+        else:
+            api = _get_or_start_runtime_api(config)
+            bundle = api.get_bundle()
+        model = bundle.model
+        hidden_vec = build_ffn_post_silu_neuron_output_vector(
+            model,
+            layer_idx=int(layer_idx),
+            neuron_idx=int(ffn_neuron_idx),
+            activation_value=float(activation_value),
+        )
+        return run_starting_from_middle_layer_probe(
+            word=None,
+            config=config,
+            start_layer_idx=int(layer_idx),
+            hidden_state=hidden_vec,
+            input_ids_override=input_ids_override,
+            bundle_override=bundle,
+        )
+    except Exception as exc:  # noqa: BLE001
+        return None, str(exc)

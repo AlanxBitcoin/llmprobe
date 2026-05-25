@@ -66,6 +66,14 @@ UI_ACTIONS: dict[str, UIAction] = {
         command="run-layer-neuron-logits-table",
         form_schema="layer_neuron_logits_table_form",
     ),
+    "study_layer_ffn_neuron_logits_table": UIAction(
+        id="study_layer_ffn_neuron_logits_table",
+        label="Layer FFN Neuron Logits Table",
+        description="For one layer, activate one post-SiLU FFN neuron at a time and collect top15 logits.",
+        kind="study",
+        command="run-layer-ffn-neuron-logits-table",
+        form_schema="layer_ffn_neuron_logits_table_form",
+    ),
     "study_single_word": UIAction(
         id="study_single_word",
         label="Single Word",
@@ -171,7 +179,6 @@ def build_command_args(action: UIAction, params: dict[str, Any]) -> list[str]:
     if action.command == "run-layer-neuron-logits-table":
         intervention_layer = params.get("intervention_layer")
         activation_value = params.get("activation_value")
-        threshold = params.get("threshold")
         return_batch_size = params.get("return_batch_size")
         return [
             action.command,
@@ -179,8 +186,19 @@ def build_command_args(action: UIAction, params: dict[str, Any]) -> list[str]:
             str(30 if intervention_layer is None else intervention_layer),
             "--activation-value",
             str(10.0 if activation_value is None else activation_value),
-            "--threshold",
-            str(15.0 if threshold is None else threshold),
+            "--return-batch-size",
+            str(128 if return_batch_size is None else return_batch_size),
+        ]
+    if action.command == "run-layer-ffn-neuron-logits-table":
+        intervention_layer = params.get("intervention_layer")
+        activation_value = params.get("activation_value")
+        return_batch_size = params.get("return_batch_size")
+        return [
+            action.command,
+            "--intervention-layer",
+            str(30 if intervention_layer is None else intervention_layer),
+            "--activation-value",
+            str(10.0 if activation_value is None else activation_value),
             "--return-batch-size",
             str(128 if return_batch_size is None else return_batch_size),
         ]

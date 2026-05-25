@@ -25,6 +25,17 @@ const chatSendButton = document.getElementById("chatSendButton");
 const chatClearButton = document.getElementById("chatClearButton");
 const chatTemperature = document.getElementById("chatTemperature");
 const chatMaxTokens = document.getElementById("chatMaxTokens");
+const openHistoryButton = document.createElement("button");
+openHistoryButton.type = "button";
+openHistoryButton.textContent = "Open History Result";
+openHistoryButton.style.marginLeft = "8px";
+openHistoryButton.style.display = "none";
+runButton.insertAdjacentElement("afterend", openHistoryButton);
+const historySelect = document.createElement("select");
+historySelect.style.marginLeft = "8px";
+historySelect.style.display = "none";
+historySelect.style.minWidth = "260px";
+runButton.insertAdjacentElement("afterend", historySelect);
 
 let chatMessages = [];
 
@@ -72,6 +83,10 @@ function selectAction(actionId) {
   actionDescription.textContent = selectedAction.description || "";
   renderForm(selectedAction.fields || []);
   runButton.disabled = false;
+  updateHistoryButtonVisibility();
+  if (selectedAction && selectedAction.id === "study_layer_ffn_neuron_logits_table") {
+    loadFfnHistoryList();
+  }
   updateCommandPreview();
 }
 
@@ -143,6 +158,7 @@ function toDisplayProtocol(heatmap) {
 function updateCommandPreview() {
   updateBosAssistantVisibility();
   updateBatchNameDropdownVisibility();
+  updateHistoryButtonVisibility();
   if (!selectedAction) {
     commandPreview.textContent = "";
     return;
@@ -153,6 +169,46 @@ function updateCommandPreview() {
     null,
     2,
   );
+}
+
+function updateHistoryButtonVisibility() {
+  if (!openHistoryButton || !historySelect) return;
+  const visible = Boolean(selectedAction && selectedAction.id === "study_layer_ffn_neuron_logits_table");
+  openHistoryButton.style.display = visible ? "inline-block" : "none";
+  historySelect.style.display = visible ? "inline-block" : "none";
+}
+
+async function loadFfnHistoryList() {
+  if (!historySelect) return;
+  historySelect.innerHTML = "";
+  const loading = document.createElement("option");
+  loading.value = "";
+  loading.textContent = "Loading history...";
+  historySelect.appendChild(loading);
+  try {
+    const resp = await fetch("/api/history/layer-ffn-neuron/list");
+    const payload = await resp.json();
+    const items = Array.isArray(payload && payload.items) ? payload.items : [];
+    historySelect.innerHTML = "";
+    const first = document.createElement("option");
+    first.value = "";
+    first.textContent = items.length > 0 ? "Latest" : "No history";
+    historySelect.appendChild(first);
+    items.forEach((item) => {
+      const name = String((item && item.name) || "").trim();
+      if (!name) return;
+      const opt = document.createElement("option");
+      opt.value = name;
+      opt.textContent = name;
+      historySelect.appendChild(opt);
+    });
+  } catch (_err) {
+    historySelect.innerHTML = "";
+    const failed = document.createElement("option");
+    failed.value = "";
+    failed.textContent = "History load failed";
+    historySelect.appendChild(failed);
+  }
 }
 
 function updateBosAssistantVisibility() {
@@ -272,6 +328,37 @@ async function runSelectedAction() {
     }
   } finally {
     runButton.disabled = false;
+    setStatus("Ready");
+  }
+}
+
+async function openLatestFfnHistory() {
+  const studyWindow = window.open("", "_blank");
+  setStatus("Loading History");
+  try {
+    const selectedName = historySelect ? String(historySelect.value || "").trim() : "";
+    const url = selectedName
+      ? `/api/history/layer-ffn-neuron/item?name=${encodeURIComponent(selectedName)}`
+      : "/api/history/layer-ffn-neuron/latest";
+    const resp = await fetch(url);
+    const payload = await resp.json();
+    if (!payload || payload.status !== "ok") {
+      const msg = payload && payload.stderr ? String(payload.stderr) : "No history found.";
+      if (studyWindow && !studyWindow.closed) {
+        studyWindow.document.body.innerHTML = `<pre style="padding:12px;color:#a83d3d;">${escapeHtml(msg)}</pre>`;
+      }
+      resultSummary.textContent = msg;
+      return;
+    }
+    renderResultInWindow(studyWindow, payload);
+    resultSummary.textContent = "Opened latest FFN history result.";
+  } catch (error) {
+    const msg = String(error && error.message ? error.message : error);
+    if (studyWindow && !studyWindow.closed) {
+      studyWindow.document.body.innerHTML = `<pre style="padding:12px;color:#a83d3d;">${escapeHtml(msg)}</pre>`;
+    }
+    resultSummary.textContent = `Open history failed: ${msg}`;
+  } finally {
     setStatus("Ready");
   }
 }
@@ -728,12 +815,13 @@ function renderNeuronLogitsTableIntoDoc(doc, container, rows, payload) {
   const activation = Number(payload && payload.activation_value);
   const topK = Number(payload && payload.top_k);
   const hiddenDim = Number(payload && payload.hidden_dim);
-  const threshold = Number(payload && payload.threshold);
+  let threshold = Number(payload && payload.threshold);
+  if (!Number.isFinite(threshold)) threshold = 15.0;
   const returnedRows = Number(payload && payload.returned_rows);
   const filteredRows = Number(payload && payload.filtered_out_rows);
   const meta = doc.createElement("div");
   meta.className = "muted";
-  meta.textContent = `layer=${Number.isFinite(layer) ? layer : "-"}, activation=${Number.isFinite(activation) ? activation : "-"}, threshold=${Number.isFinite(threshold) ? threshold : "-"}, top_k=${Number.isFinite(topK) ? topK : "-"}, hidden_dim=${Number.isFinite(hiddenDim) ? hiddenDim : "-"}, returned=${Number.isFinite(returnedRows) ? returnedRows : "-"}, filtered=${Number.isFinite(filteredRows) ? filteredRows : "-"}`;
+  meta.textContent = `layer=${Number.isFinite(layer) ? layer : "-"}, activation=${Number.isFinite(activation) ? activation : "-"}, threshold=${threshold.toFixed(3)}, top_k=${Number.isFinite(topK) ? topK : "-"}, hidden_dim=${Number.isFinite(hiddenDim) ? hiddenDim : "-"}, returned=${Number.isFinite(returnedRows) ? returnedRows : "-"}, filtered=${Number.isFinite(filteredRows) ? filteredRows : "-"}`;
   container.appendChild(meta);
 
   const isBatched = Array.isArray(rows) && rows.length > 0 && rows[0] && typeof rows[0] === "object" && Array.isArray(rows[0].rows);
@@ -745,10 +833,35 @@ function renderNeuronLogitsTableIntoDoc(doc, container, rows, payload) {
     return;
   }
 
+  const filterControls = doc.createElement("div");
+  filterControls.className = "muted";
+  const thresholdLabel = doc.createElement("span");
+  thresholdLabel.textContent = "Top1 Logit Threshold ";
+  const thresholdInput = doc.createElement("input");
+  thresholdInput.type = "number";
+  thresholdInput.step = "0.001";
+  thresholdInput.value = String(threshold);
+  thresholdInput.style.width = "100px";
+  const thresholdHint = doc.createElement("span");
+  thresholdHint.style.marginLeft = "8px";
+  filterControls.appendChild(thresholdLabel);
+  filterControls.appendChild(thresholdInput);
+  filterControls.appendChild(thresholdHint);
+  container.appendChild(filterControls);
+
+  function rowPassesThreshold(row) {
+    const top = Array.isArray(row && row.top_logits) ? row.top_logits : [];
+    if (!top.length) return false;
+    const v = Number(top[0] && top[0].logit);
+    return Number.isFinite(v) && v >= threshold;
+  }
+
   function buildTableForRows(tableRows) {
+    const safeRows = Array.isArray(tableRows) ? tableRows : [];
+    const filteredRowsNow = safeRows.filter((r) => rowPassesThreshold(r));
     const effectiveTopK = Number.isFinite(topK) && topK > 0
       ? Math.floor(topK)
-      : Math.max(...tableRows.map((r) => Array.isArray(r && r.top_logits) ? r.top_logits.length : 0), 0);
+      : Math.max(...filteredRowsNow.map((r) => Array.isArray(r && r.top_logits) ? r.top_logits.length : 0), 0);
 
     const wrap = doc.createElement("div");
     wrap.className = "scroll";
@@ -775,32 +888,47 @@ function renderNeuronLogitsTableIntoDoc(doc, container, rows, payload) {
     table.appendChild(thead);
 
     const tbody = doc.createElement("tbody");
-    tableRows.forEach((row) => {
+    if (filteredRowsNow.length === 0) {
       const tr = doc.createElement("tr");
-      const neuronCell = doc.createElement("td");
-      neuronCell.textContent = String((row && row.neuron_id) ?? "");
-      tr.appendChild(neuronCell);
-      const top = Array.isArray(row && row.top_logits) ? row.top_logits : [];
-      for (let idx = 0; idx < effectiveTopK; idx += 1) {
-        const item = top[idx] || {};
-        const tdText = doc.createElement("td");
-        tdText.textContent = String(item.text ?? "");
-        tdText.title = String(item.text ?? "");
-        tdText.style.maxWidth = "20ch";
-        tdText.style.whiteSpace = "nowrap";
-        tdText.style.overflow = "hidden";
-        tdText.style.textOverflow = "ellipsis";
-        tr.appendChild(tdText);
-        const tdLogit = doc.createElement("td");
-        const lv = item.logit;
-        tdLogit.textContent = typeof lv === "number" ? lv.toFixed(6) : "";
-        tr.appendChild(tdLogit);
-      }
+      const td = doc.createElement("td");
+      td.colSpan = Math.max(1, 1 + effectiveTopK * 2);
+      td.className = "muted";
+      td.textContent = `No rows pass threshold ${threshold.toFixed(3)} in this batch.`;
+      tr.appendChild(td);
       tbody.appendChild(tr);
-    });
+    } else {
+      filteredRowsNow.forEach((row) => {
+        const tr = doc.createElement("tr");
+        const neuronCell = doc.createElement("td");
+        neuronCell.textContent = String((row && row.neuron_id) ?? "");
+        tr.appendChild(neuronCell);
+        const top = Array.isArray(row && row.top_logits) ? row.top_logits : [];
+        for (let idx = 0; idx < effectiveTopK; idx += 1) {
+          const item = top[idx] || {};
+          const tdText = doc.createElement("td");
+          tdText.textContent = String(item.text ?? "");
+          tdText.title = String(item.text ?? "");
+          tdText.style.maxWidth = "20ch";
+          tdText.style.whiteSpace = "nowrap";
+          tdText.style.overflow = "hidden";
+          tdText.style.textOverflow = "ellipsis";
+          tr.appendChild(tdText);
+          const tdLogit = doc.createElement("td");
+          const lv = item.logit;
+          tdLogit.textContent = typeof lv === "number" ? lv.toFixed(6) : "";
+          tr.appendChild(tdLogit);
+        }
+        tbody.appendChild(tr);
+      });
+    }
     table.appendChild(tbody);
     wrap.appendChild(table);
+    thresholdHint.textContent = `showing ${filteredRowsNow.length}/${safeRows.length} rows in this view`;
     return wrap;
+  }
+
+  function updateMetaForThreshold(totalRows, keptRows) {
+    meta.textContent = `layer=${Number.isFinite(layer) ? layer : "-"}, activation=${Number.isFinite(activation) ? activation : "-"}, threshold=${threshold.toFixed(3)}, top_k=${Number.isFinite(topK) ? topK : "-"}, hidden_dim=${Number.isFinite(hiddenDim) ? hiddenDim : "-"}, returned=${Number.isFinite(totalRows) ? totalRows : "-"}, filtered=${Math.max(0, totalRows - keptRows)}`;
   }
 
   if (isBatched) {
@@ -808,31 +936,68 @@ function renderNeuronLogitsTableIntoDoc(doc, container, rows, payload) {
     hint.className = "muted";
     hint.textContent = "Batched lazy render: expand one batch to load its table.";
     container.appendChild(hint);
-    rows.forEach((batch, idx) => {
-      const batchRows = Array.isArray(batch && batch.rows) ? batch.rows : [];
-      const details = doc.createElement("details");
-      const summary = doc.createElement("summary");
-      const startId = Number(batch && batch.start_neuron_id);
-      const endId = Number(batch && batch.end_neuron_id);
-      summary.textContent = `Batch ${idx}: neuron ${Number.isFinite(startId) ? startId : "-"} - ${Number.isFinite(endId) ? endId : "-"} (${batchRows.length} rows)`;
-      details.appendChild(summary);
-      const placeholder = doc.createElement("div");
-      placeholder.className = "muted";
-      placeholder.textContent = "Expand to render table...";
-      details.appendChild(placeholder);
-      let rendered = false;
-      details.addEventListener("toggle", () => {
-        if (!details.open || rendered) return;
-        placeholder.remove();
-        details.appendChild(buildTableForRows(batchRows));
-        rendered = true;
+    const batchHost = doc.createElement("div");
+    container.appendChild(batchHost);
+    function renderBatches() {
+      batchHost.innerHTML = "";
+      let keptTotal = 0;
+      let totalRows = 0;
+      rows.forEach((batch, idx) => {
+        const batchRows = Array.isArray(batch && batch.rows) ? batch.rows : [];
+        const keptInBatch = batchRows.filter((r) => rowPassesThreshold(r)).length;
+        keptTotal += keptInBatch;
+        totalRows += batchRows.length;
+        const details = doc.createElement("details");
+        const summary = doc.createElement("summary");
+        const startId = Number(batch && batch.start_neuron_id);
+        const endId = Number(batch && batch.end_neuron_id);
+        summary.textContent = `Batch ${idx}: neuron ${Number.isFinite(startId) ? startId : "-"} - ${Number.isFinite(endId) ? endId : "-"} (${keptInBatch}/${batchRows.length})`;
+        details.appendChild(summary);
+        const placeholder = doc.createElement("div");
+        placeholder.className = "muted";
+        placeholder.textContent = "Expand to render table...";
+        details.appendChild(placeholder);
+        let rendered = false;
+        details.addEventListener("toggle", () => {
+          if (!details.open || rendered) return;
+          try {
+            placeholder.remove();
+            details.appendChild(buildTableForRows(batchRows));
+            rendered = true;
+          } catch (err) {
+            const e = doc.createElement("div");
+            e.className = "error";
+            e.textContent = `Batch render failed: ${String(err && err.message ? err.message : err)}`;
+            details.appendChild(e);
+          }
+        });
+        batchHost.appendChild(details);
       });
-      container.appendChild(details);
+      updateMetaForThreshold(totalRows, keptTotal);
+    }
+    thresholdInput.addEventListener("input", () => {
+      const next = Number(thresholdInput.value);
+      threshold = Number.isFinite(next) ? next : 15.0;
+      renderBatches();
     });
+    renderBatches();
     return;
   }
 
-  container.appendChild(buildTableForRows(rows));
+  const singleHost = doc.createElement("div");
+  container.appendChild(singleHost);
+  function renderSingle() {
+    singleHost.innerHTML = "";
+    singleHost.appendChild(buildTableForRows(rows));
+    const kept = rows.filter((r) => rowPassesThreshold(r)).length;
+    updateMetaForThreshold(rows.length, kept);
+  }
+  thresholdInput.addEventListener("input", () => {
+    const next = Number(thresholdInput.value);
+    threshold = Number.isFinite(next) ? next : 15.0;
+    renderSingle();
+  });
+  renderSingle();
 }
 
 function renderResult(result) {
@@ -1269,6 +1434,7 @@ function escapeHtml(value) {
 }
 
 runButton.addEventListener("click", runSelectedAction);
+openHistoryButton.addEventListener("click", openLatestFfnHistory);
 showCsvButton.addEventListener("click", () => lastResult && renderCsv(lastResult.csv_preview));
 histogramButton.addEventListener("click", addHistogram);
 colorMapButton.addEventListener("click", addColorMap);

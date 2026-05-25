@@ -13,6 +13,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 from urllib.parse import unquote, urlparse
+from urllib.parse import parse_qs
 
 from .routes import (
     actions_payload,
@@ -20,6 +21,9 @@ from .routes import (
     execute_chat_completion,
     execute_ui_action,
     get_ui_action_task,
+    list_ffn_neuron_history,
+    load_latest_ffn_neuron_history_result,
+    load_ffn_neuron_history_result,
     parse_json_body,
     start_ui_action_task,
 )
@@ -41,6 +45,11 @@ def run_ui_server(
     ui_cfg = (config or {}).get("ui", {})
     host = host or ui_cfg.get("host") or DEFAULT_HOST
     port = int(port or ui_cfg.get("port") or DEFAULT_PORT)
+    # Default to built-in threaded server for responsiveness under heavy local jobs.
+    prefer_builtin = bool(ui_cfg.get("prefer_builtin_threading", True))
+    if prefer_builtin:
+        _run_builtin_server(root.resolve(), Path(config_path), host=str(host), port=int(port))
+        return
     try:
         _run_fastapi_server(root.resolve(), Path(config_path), host=str(host), port=int(port))
         return
@@ -76,12 +85,28 @@ def _run_fastapi_server(project_root: Path, config_path: Path, *, host: str, por
     async def api_batches():
         return JSONResponse(batch_options_payload(project_root))
 
+    @app.get("/api/history/layer-ffn-neuron/latest")
+    async def api_history_ffn_latest():
+        result = load_latest_ffn_neuron_history_result(project_root)
+        status = 200 if result.get("status") == "ok" else 404
+        return JSONResponse(result, status_code=status)
+
+    @app.get("/api/history/layer-ffn-neuron/list")
+    async def api_history_ffn_list():
+        return JSONResponse(list_ffn_neuron_history(project_root), status_code=200)
+
+    @app.get("/api/history/layer-ffn-neuron/item")
+    async def api_history_ffn_item(name: str = ""):
+        result = load_ffn_neuron_history_result(project_root, name=str(name or "").strip() or None)
+        status = 200 if result.get("status") == "ok" else 404
+        return JSONResponse(result, status_code=status)
+
     @app.post("/api/execute")
     async def api_execute(payload: dict[str, Any] | None = Body(default=None)):
         payload = payload or {}
         action_id = str(payload.get("action_id") or "")
         params = payload.get("params") or {}
-        if action_id == "study_layer_neuron_logits_table":
+        if action_id in {"study_layer_neuron_logits_table", "study_layer_ffn_neuron_logits_table"}:
             result = start_ui_action_task(
                 action_id=action_id,
                 params=params,
@@ -175,7 +200,9 @@ def _run_fastapi_server(project_root: Path, config_path: Path, *, host: str, por
 
 def _run_builtin_server(project_root: Path, config_path: Path, *, host: str, port: int) -> None:
     handler = _make_handler(project_root.resolve(), Path(config_path))
-    server = ThreadingHTTPServer((host, port), handler)
+    class _ThreadedServer(ThreadingHTTPServer):
+        daemon_threads = True
+    server = _ThreadedServer((host, port), handler)
     print(f"UI server running at http://{host}:{port}")
     print("Press Ctrl+C to stop.")
     try:
@@ -205,6 +232,19 @@ def _make_handler(project_root: Path, config_path: Path) -> type[BaseHTTPRequest
                 return
             if path == "/api/batches":
                 self._send_json(batch_options_payload(project_root))
+                return
+            if path == "/api/history/layer-ffn-neuron/latest":
+                result = load_latest_ffn_neuron_history_result(project_root)
+                self._send_json(result, status=200 if result.get("status") == "ok" else 404)
+                return
+            if path == "/api/history/layer-ffn-neuron/list":
+                self._send_json(list_ffn_neuron_history(project_root), status=200)
+                return
+            if path == "/api/history/layer-ffn-neuron/item":
+                query = parse_qs(parsed.query or "")
+                name = str((query.get("name") or [""])[0] or "").strip()
+                result = load_ffn_neuron_history_result(project_root, name=name or None)
+                self._send_json(result, status=200 if result.get("status") == "ok" else 404)
                 return
             if path.startswith("/api/tasks/") and path.endswith("/events"):
                 # Built-in server fallback: emulate SSE stream.
@@ -266,7 +306,7 @@ def _make_handler(project_root: Path, config_path: Path) -> type[BaseHTTPRequest
                 else:
                     action_id = str(payload.get("action_id") or "")
                     params = payload.get("params") or {}
-                    if action_id == "study_layer_neuron_logits_table":
+                    if action_id in {"study_layer_neuron_logits_table", "study_layer_ffn_neuron_logits_table"}:
                         result = start_ui_action_task(
                             action_id=action_id,
                             params=params,
