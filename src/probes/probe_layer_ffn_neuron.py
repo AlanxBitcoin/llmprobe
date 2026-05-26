@@ -61,6 +61,7 @@ def run_multi_ffn_neurons_from_layer_probe(
     ffn_neuron_indices: list[int],
     activation_value: float,
     input_ids_override: torch.Tensor | None = None,
+    base_hidden_sequence: torch.Tensor | None = None,
     bundle_override=None,
 ) -> tuple[dict[str, Any] | None, str | None]:
     try:
@@ -81,8 +82,8 @@ def run_multi_ffn_neurons_from_layer_probe(
         )
 
         bsz = int(hidden_matrix.shape[0])
-        hidden_full = hidden_matrix.unsqueeze(1)
         device = next(model.parameters()).device
+        hidden_dtype = hidden_matrix.dtype
         if input_ids_override is not None:
             input_tensor = input_ids_override.to(device=device, dtype=torch.long)
             if input_tensor.ndim == 1:
@@ -101,6 +102,27 @@ def run_multi_ffn_neurons_from_layer_probe(
                     return None, "Tokenizer does not provide bootstrap token id"
                 bos_id = int(encoded[0])
             input_tensor = torch.full((bsz, 1), int(bos_id), dtype=torch.long, device=device)
+
+        if base_hidden_sequence is not None:
+            base_seq = base_hidden_sequence.to(device=device, dtype=hidden_dtype)
+            if base_seq.ndim == 2:
+                base_seq = base_seq.unsqueeze(0)
+            if base_seq.ndim != 3:
+                return None, f"base_hidden_sequence must be [B,S,H] or [S,H], got shape={tuple(base_seq.shape)}"
+            if int(base_seq.shape[0]) == 1 and bsz > 1:
+                base_seq = base_seq.expand(bsz, -1, -1).clone()
+            elif int(base_seq.shape[0]) != bsz:
+                return None, (
+                    f"base_hidden_sequence batch mismatch: expected 1 or {bsz}, got {int(base_seq.shape[0])}"
+                )
+            if int(base_seq.shape[2]) != int(hidden_matrix.shape[1]):
+                return None, (
+                    f"base_hidden_sequence hidden mismatch: expected {int(hidden_matrix.shape[1])}, got {int(base_seq.shape[2])}"
+                )
+            hidden_full = base_seq
+            hidden_full[:, -1, :] = hidden_full[:, -1, :] + hidden_matrix
+        else:
+            hidden_full = hidden_matrix.unsqueeze(1)
 
         result = starting_from_middle_layer(
             model,

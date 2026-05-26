@@ -58,6 +58,14 @@ UI_ACTIONS: dict[str, UIAction] = {
         command="run-sentence-next-word",
         form_schema="sentence_next_word_form",
     ),
+    "study_token_diff": UIAction(
+        id="study_token_diff",
+        label="Token Diff",
+        description="Input two single-token words, render A/B hidden-state heatmaps and A-B diff heatmap.",
+        kind="study",
+        command="run-token-diff",
+        form_schema="token_diff_form",
+    ),
     "study_single_word_top_100_neurons": UIAction(
         id="study_single_word_top_100_neurons",
         label="Single Word Top 100 Neurons",
@@ -175,6 +183,12 @@ def build_command_args(action: UIAction, params: dict[str, Any]) -> list[str]:
         ]
     if action.command == "run-sentence-next-word":
         return [action.command, str(params.get("sentence") or "The apple is red.")]
+    if action.command == "run-token-diff":
+        return [
+            action.command,
+            str(params.get("token_a") or "apple"),
+            str(params.get("token_b") or "banana"),
+        ]
     if action.command == "run-single-word-top-100-neurons":
         top_k_neurons = params.get("top_k_neurons")
         intervention_layer = params.get("intervention_layer")
@@ -209,6 +223,9 @@ def build_command_args(action: UIAction, params: dict[str, Any]) -> list[str]:
     if action.command == "run-layer-ffn-neuron-logits-table":
         intervention_layer = params.get("intervention_layer")
         activation_value = params.get("activation_value")
+        use_prefix_context = params.get("use_prefix_context")
+        use_prefix_context_flag = bool(use_prefix_context) if use_prefix_context is not None else False
+        prefix_text = str(params.get("prefix_text") or "The apple is red.")
         return_batch_size = params.get("return_batch_size")
         return [
             action.command,
@@ -216,6 +233,10 @@ def build_command_args(action: UIAction, params: dict[str, Any]) -> list[str]:
             str(30 if intervention_layer is None else intervention_layer),
             "--activation-value",
             str(10.0 if activation_value is None else activation_value),
+            "--use-prefix-context",
+            "true" if use_prefix_context_flag else "false",
+            "--prefix-text",
+            prefix_text,
             "--return-batch-size",
             str(1000 if return_batch_size is None else return_batch_size),
         ]

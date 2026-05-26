@@ -158,8 +158,9 @@ def _load_ffn_neuron_history_result_from_csv(project_root: str | Path, csv_path:
 
     with csv_path.open("r", encoding="utf-8", newline="") as fh:
         reader = csv.DictReader(fh)
+        headers = list(reader.fieldnames or [])
         records = list(reader)
-    rank_cols = [c for c in (records[0].keys() if records else []) if c.startswith("rank_") and c.endswith("_text")]
+    rank_cols = [c for c in headers if c.startswith("rank_") and c.endswith("_text")]
     top_k = len(rank_cols)
     rows: list[dict[str, Any]] = []
     for rec in records:
@@ -563,7 +564,7 @@ def execute_chat_completion(
             }
 
         try:
-            with torch.no_grad():
+            with torch.inference_mode():
                 output_ids = model.generate(**gen_kwargs)
         finally:
             if hook_handle is not None:
@@ -677,6 +678,7 @@ def execute_ui_action(
             "run-single-word-hidden-state",
             "run-single-word-hidden-state-batch-average",
             "run-sentence-next-word",
+            "run-token-diff",
             "run-single-word-top-100-neurons",
             "run-layer-ffn-neuron-logits-table",
         }:
@@ -792,6 +794,7 @@ def start_ui_action_task(
                 "run-single-word-hidden-state",
                 "run-single-word-hidden-state-batch-average",
                 "run-sentence-next-word",
+                "run-token-diff",
                 "run-single-word-top-100-neurons",
                 "run-layer-neuron-logits-table",
                 "run-layer-ffn-neuron-logits-table",

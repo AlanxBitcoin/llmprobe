@@ -18,7 +18,9 @@ import torch.nn.functional as F
 
 from ..config import load_config
 from ..runtime_api import RuntimeRequest, get_runtime_api, start_llama_api
-from ..probes.probe_layer_ffn_neuron import run_multi_ffn_neurons_from_layer_probe
+from ..probes.probe_layer_neuron import run_layer_neuron_batch_to_logits_probe
+from ..probes.probe_hidden_state import fetch_sentence_last_token_hidden_state
+from ..utils.hooks import build_ffn_post_silu_neuron_output_matrix
 from ..utils.utils import ensure_dir, write_csv
 
 
@@ -124,6 +126,8 @@ def run_study(
     *,
     intervention_layer: int = 30,
     activation_value: float = 10.0,
+    use_prefix_context: bool = False,
+    prefix_text: str = "",
     return_batch_size: int = 1000,
     config: dict[str, Any] | None = None,
     config_path: str | Path = "configs/custom.yaml",
@@ -205,8 +209,89 @@ def run_study(
         }
 
     device = next(model.parameters()).device
+    model_dtype = next(model.parameters()).dtype
     token_id = _resolve_bootstrap_token_id(tokenizer)
     input_ids = torch.tensor([[int(token_id)]], dtype=torch.long, device=device)
+    base_sequence_hidden = None
+    prefix_token_ids: list[int] = []
+    prefix_attention_by_layer: list[dict[str, Any]] = []
+    attention_reused_for_intervention = False
+    prefix_enabled = bool(use_prefix_context)
+    if prefix_enabled:
+        text = str(prefix_text or "").strip()
+        if not text:
+            return {
+                "ok": False,
+                "reason": "prefix_text_required",
+                "message": "prefix_text_required",
+                "neuron_logits_rows": [],
+                "ui_tasks": [{"name": "render_neuron_logits_table", "value_key": "neuron_logits_rows"}],
+            }
+        prefix_ctx = fetch_sentence_last_token_hidden_state(
+            sentence=text,
+            config=cfg,
+        )
+        if not isinstance(prefix_ctx, dict) or not prefix_ctx.get("ok"):
+            reason = (
+                str(prefix_ctx.get("reason"))
+                if isinstance(prefix_ctx, dict) and prefix_ctx.get("reason")
+                else "prefix_hidden_fetch_failed"
+            )
+            return {
+                "ok": False,
+                "reason": reason,
+                "message": reason,
+                "prefix_word": text,
+                "prefix_detail": prefix_ctx if isinstance(prefix_ctx, dict) else {},
+                "neuron_logits_rows": [],
+                "ui_tasks": [{"name": "render_neuron_logits_table", "value_key": "neuron_logits_rows"}],
+            }
+        try:
+            prefix_token_ids = [int(x) for x in (prefix_ctx.get("prefix_token_ids") or [])]
+            input_ids_list = [int(x) for x in (prefix_ctx.get("input_ids") or [])]
+            if not input_ids_list:
+                return {
+                    "ok": False,
+                    "reason": "prefix_input_ids_missing",
+                    "message": "prefix_input_ids_missing",
+                    "neuron_logits_rows": [],
+                    "ui_tasks": [{"name": "render_neuron_logits_table", "value_key": "neuron_logits_rows"}],
+                }
+            input_ids = torch.tensor([input_ids_list], dtype=torch.long, device=device)
+            prefix_attention_by_layer = list(prefix_ctx.get("last_token_attention_by_layer") or [])
+            prefix_hidden_states = prefix_ctx.get("all_token_hidden_by_layer") or []
+            if not prefix_hidden_states:
+                return {
+                    "ok": False,
+                    "reason": "prefix_hidden_states_missing",
+                    "message": "prefix_hidden_states_missing",
+                    "neuron_logits_rows": [],
+                    "ui_tasks": [{"name": "render_neuron_logits_table", "value_key": "neuron_logits_rows"}],
+                }
+            seq_row_idx = int(layer_idx) + 1
+            if not (0 <= seq_row_idx < len(prefix_hidden_states)):
+                return {
+                    "ok": False,
+                    "reason": f"prefix_hidden_unavailable_for_layer:{layer_idx}",
+                    "message": f"prefix_hidden_unavailable_for_layer:{layer_idx}",
+                    "neuron_logits_rows": [],
+                    "ui_tasks": [{"name": "render_neuron_logits_table", "value_key": "neuron_logits_rows"}],
+                }
+            base_sequence_hidden = torch.as_tensor(
+                prefix_hidden_states[seq_row_idx],
+                device=device,
+                dtype=next(model.parameters()).dtype,
+            ).unsqueeze(0)
+            attention_reused_for_intervention = True
+        except Exception as exc:  # noqa: BLE001
+            reason = str(exc)
+            return {
+                "ok": False,
+                "reason": reason,
+                "message": reason,
+                "neuron_logits_rows": [],
+                "ui_tasks": [{"name": "render_neuron_logits_table", "value_key": "neuron_logits_rows"}],
+            }
 
     top_k = 15
     batch_size = max(1, int(return_batch_size))
@@ -220,39 +305,35 @@ def run_study(
 
     for start in range(0, int(ffn_dim), int(compute_batch_size)):
         neuron_ids = list(range(start, min(start + int(compute_batch_size), int(ffn_dim))))
-        transit, transit_error = run_multi_ffn_neurons_from_layer_probe(
-            config=cfg,
-            layer_idx=layer_idx,
-            ffn_neuron_indices=neuron_ids,
+        ffn_output_batch = build_ffn_post_silu_neuron_output_matrix(
+            model,
+            layer_idx=int(layer_idx),
+            neuron_indices=neuron_ids,
             activation_value=float(activation_value),
-            input_ids_override=input_ids,
-            bundle_override=bundle,
         )
-        if transit is None:
-            return {
-                "ok": False,
-                "reason": "probe_single_ffn_neuron_failed",
-                "error": str(transit_error or "unknown"),
-                "neuron_logits_rows": rows,
-                "ui_tasks": [{"name": "render_neuron_logits_table", "value_key": "neuron_logits_rows"}],
-            }
-        outputs = transit["result"]["outputs"]
-        hidden_states = getattr(outputs, "hidden_states", None)
-        if not hidden_states:
-            return {
-                "ok": False,
-                "reason": "missing_hidden_states",
-                "neuron_logits_rows": rows,
-                "ui_tasks": [{"name": "render_neuron_logits_table", "value_key": "neuron_logits_rows"}],
-            }
-        final_batch = hidden_states[-1].detach()  # [B,S,H]
-        logits_batch = _rank_hidden_batch_by_logits(
-            model=model,
-            tokenizer=tokenizer,
-            hidden_batch=final_batch[:, -1, :],
+        if prefix_enabled and base_sequence_hidden is not None:
+            hidden_batch = base_sequence_hidden.expand(len(neuron_ids), -1, -1).clone()
+            hidden_batch[:, -1, :] = hidden_batch[:, -1, :] + ffn_output_batch
+        else:
+            hidden_batch = ffn_output_batch.to(dtype=model_dtype)
+        input_ids_batch = input_ids.expand(len(neuron_ids), -1).contiguous()
+        logits_batch, logits_error = run_layer_neuron_batch_to_logits_probe(
+            bundle=bundle,
+            config=cfg,
+            start_layer_idx=layer_idx,
+            input_ids=input_ids_batch,
+            hidden_batch=hidden_batch,
             top_k=top_k,
-            apply_final_norm=False,
+            include_cosine=False,
         )
+        if logits_batch is None:
+            return {
+                "ok": False,
+                "reason": "probe_starting_from_middle_layer_failed",
+                "error": str(logits_error or "unknown"),
+                "neuron_logits_rows": rows,
+                "ui_tasks": [{"name": "render_neuron_logits_table", "value_key": "neuron_logits_rows"}],
+            }
         bsz = int(len(logits_batch))
         for local_idx in range(bsz):
             neuron_id = int(neuron_ids[local_idx])
@@ -306,16 +387,23 @@ def run_study(
     )
     csv_path = _history_dir() / csv_name
     history_rows = _build_history_csv_rows(rows, top_k=top_k)
-    history_rel = ""
-    if history_rows:
-        write_csv(csv_path, history_rows)
-        history_rel = str(csv_path.as_posix())
+    csv_headers = ["neuron_id"]
+    for rank in range(1, int(top_k) + 1):
+        csv_headers.append(f"rank_{rank}_text")
+        csv_headers.append(f"rank_{rank}_logit")
+    write_csv(csv_path, history_rows, headers=csv_headers)
+    history_rel = str(csv_path.as_posix())
 
     return {
         "ok": True,
         "study": "layer_ffn_neuron_single_activation_logits",
         "intervention_layer": int(layer_number),
         "activation_value": float(activation_value),
+        "use_prefix_context": bool(prefix_enabled),
+        "prefix_text": str(prefix_text or ""),
+        "prefix_token_count": int(len(prefix_token_ids)),
+        "prefix_last_token_attention_by_layer": prefix_attention_by_layer,
+        "attention_reused_for_intervention": bool(attention_reused_for_intervention),
         "threshold": 15.0,
         "top_k": int(top_k),
         "hidden_dim": int(ffn_dim),

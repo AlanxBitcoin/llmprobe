@@ -56,6 +56,7 @@ from src.study import (
     run_single_word_hidden_state_study,
     run_single_word_hidden_state_batch_average_study,
     run_single_word_top_100_neurons_study,
+    run_token_diff_study,
 )
 from src.utils.extract_hidden import preload_hidden_store, preload_hidden_store_from_disk
 from src.utils.token_hidden_store import build_store_for_protocol
@@ -158,6 +159,13 @@ def build_parser() -> argparse.ArgumentParser:
     )
     sentence_next.add_argument("sentence", help="Sentence text")
 
+    token_diff = subparsers.add_parser(
+        "run-token-diff",
+        help="Given two single-token words, render token A/B hidden states and A-B diff heatmap.",
+    )
+    token_diff.add_argument("token_a", help="Token A text")
+    token_diff.add_argument("token_b", help="Token B text")
+
     top100 = subparsers.add_parser(
         "run-single-word-top-100-neurons",
         help="Single-word study: heatmap + baseline top15 logits + penultimate-top100 intervention top15 logits",
@@ -192,6 +200,18 @@ def build_parser() -> argparse.ArgumentParser:
     )
     ffn_neuron_scan.add_argument("--intervention-layer", type=int, default=30, help="Decoder layer number, 1-based (default: 30)")
     ffn_neuron_scan.add_argument("--activation-value", type=float, default=10.0, help="FFN neuron activation value (default: 10.0)")
+    ffn_neuron_scan.add_argument(
+        "--use-prefix-context",
+        type=_parse_bool_flag,
+        default=False,
+        help="If true, run prefix text first and add single-FFN-neuron activation on top of that layer hidden state.",
+    )
+    ffn_neuron_scan.add_argument(
+        "--prefix-text",
+        type=str,
+        default="The apple is red.",
+        help="Prefix sentence to run before intervention when --use-prefix-context=true.",
+    )
     ffn_neuron_scan.add_argument("--return-batch-size", type=int, default=1000, help="Rows per batch in returned payload (default: 1000)")
 
     combo = subparsers.add_parser("run-word-sum", help="Analyze the layer-8 summed representation of two or more words")
@@ -361,6 +381,15 @@ def _execute_parsed_args(args: argparse.Namespace, config: dict[str, Any]) -> di
         )
         return {"hidden_state_heatmap": heatmap}
 
+    if args.command == "run-token-diff":
+        heatmap = run_token_diff_study(
+            token_a=str(args.token_a or ""),
+            token_b=str(args.token_b or ""),
+            config=config,
+            config_path=args.config,
+        )
+        return {"hidden_state_heatmap": heatmap}
+
     if args.command == "run-single-word-top-100-neurons":
         heatmap = run_single_word_top_100_neurons_study(
             word=args.word,
@@ -387,6 +416,8 @@ def _execute_parsed_args(args: argparse.Namespace, config: dict[str, Any]) -> di
         heatmap = run_layer_ffn_neuron_logits_table_study(
             intervention_layer=int(args.intervention_layer),
             activation_value=float(args.activation_value),
+            use_prefix_context=bool(args.use_prefix_context),
+            prefix_text=str(args.prefix_text or ""),
             return_batch_size=int(args.return_batch_size),
             config=config,
             config_path=args.config,

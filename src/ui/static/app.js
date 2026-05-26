@@ -56,6 +56,7 @@ historySelect.style.minWidth = "260px";
 runButton.insertAdjacentElement("afterend", historySelect);
 
 let chatMessages = [];
+const CHAT_MAX_HISTORY_MESSAGES = 12;
 
 // Common grammar/function words.
 const GRAMMAR_WORD_SET = new Set([
@@ -667,7 +668,7 @@ function renderArtifactsIntoDoc(doc, container, artifacts) {
 
 function renderHeatmapIntoDoc(doc, container, heatmap) {
   container.innerHTML = "<h3>Hidden State</h3>";
-  const heatmapSyncGroup = { wraps: [], syncing: false };
+  const heatmapSyncGroup = { wraps: [], syncing: false, heatmaps: [], hover: null };
   const hasMatrix = Boolean(Array.isArray(heatmap && heatmap.matrix) && heatmap.matrix.length > 0);
   const hasHeatmaps = Boolean(Array.isArray(heatmap && heatmap.heatmaps) && heatmap.heatmaps.length > 0);
   const hasTasks = Boolean(Array.isArray(heatmap && heatmap.ui_tasks) && heatmap.ui_tasks.length > 0);
@@ -882,10 +883,73 @@ function renderOneHeatmapIntoDoc(doc, container, matrix, titleText, syncGroup) {
     }
   }
 
+  function drawHoverGuide(x, y) {
+    if (!Number.isFinite(x) || !Number.isFinite(y)) return;
+    if (x < 0 || x >= cols || y < 0 || y >= rows) return;
+    const vx = x * cell + 0.5;
+    const hy = y * cell + 0.5;
+    ctx.save();
+    ctx.strokeStyle = "rgba(255,255,255,0.85)";
+    ctx.lineWidth = 1;
+    ctx.setLineDash([5, 4]);
+    // Vertical dashed line (requested), plus horizontal for easier read.
+    ctx.beginPath();
+    ctx.moveTo(vx, 0);
+    ctx.lineTo(vx, canvas.height);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(0, hy);
+    ctx.lineTo(canvas.width, hy);
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  function redraw() {
+    drawWithThreshold(heatmapThreshold);
+    if (syncGroup && syncGroup.hover) {
+      drawHoverGuide(Number(syncGroup.hover.x), Number(syncGroup.hover.y));
+    }
+  }
+
+  function setHoverText(x, y) {
+    if (!Number.isFinite(x) || !Number.isFinite(y) || x < 0 || x >= cols || y < 0 || y >= rows) {
+      hoverMeta.textContent = "Hover: X=-, Y=-";
+      return;
+    }
+    const row = matrix[y] || [];
+    const value = Number(row[x] || 0);
+    hoverMeta.textContent = `Hover: X=${x} (neuron), Y=${y} (layer), value=${value.toFixed(6)}`;
+  }
+
+  if (syncGroup) {
+    if (!Array.isArray(syncGroup.heatmaps)) syncGroup.heatmaps = [];
+    if (typeof syncGroup.setHover !== "function") {
+      syncGroup.setHover = (x, y) => {
+        syncGroup.hover = { x: Number(x), y: Number(y) };
+        (syncGroup.heatmaps || []).forEach((item) => {
+          if (!item) return;
+          item.setHoverText(Number(x), Number(y));
+          item.redraw();
+        });
+      };
+    }
+    if (typeof syncGroup.clearHover !== "function") {
+      syncGroup.clearHover = () => {
+        syncGroup.hover = null;
+        (syncGroup.heatmaps || []).forEach((item) => {
+          if (!item) return;
+          item.setHoverText(NaN, NaN);
+          item.redraw();
+        });
+      };
+    }
+    syncGroup.heatmaps.push({ redraw, setHoverText });
+  }
+
   thresholdSlider.addEventListener("input", () => {
     heatmapThreshold = Number(thresholdSlider.value);
     thresholdValue.textContent = heatmapThreshold.toFixed(2);
-    drawWithThreshold(heatmapThreshold);
+    redraw();
   });
 
   canvas.addEventListener("mousemove", (event) => {
@@ -894,19 +958,21 @@ function renderOneHeatmapIntoDoc(doc, container, matrix, titleText, syncGroup) {
     const sy = rect.height > 0 ? (canvas.height / rect.height) : 1;
     const x = Math.floor(((event.clientX - rect.left) * sx) / cell);
     const y = Math.floor(((event.clientY - rect.top) * sy) / cell);
-    if (x < 0 || x >= cols || y < 0 || y >= rows) {
-      hoverMeta.textContent = "Hover: X=-, Y=-";
+    if (syncGroup && typeof syncGroup.setHover === "function") {
+      syncGroup.setHover(x, y);
       return;
     }
-    const row = matrix[y] || [];
-    const value = Number(row[x] || 0);
-    hoverMeta.textContent = `Hover: X=${x} (neuron), Y=${y} (layer), value=${value.toFixed(6)}`;
+    setHoverText(x, y);
   });
   canvas.addEventListener("mouseleave", () => {
-    hoverMeta.textContent = "Hover: X=-, Y=-";
+    if (syncGroup && typeof syncGroup.clearHover === "function") {
+      syncGroup.clearHover();
+      return;
+    }
+    setHoverText(NaN, NaN);
   });
 
-  drawWithThreshold(heatmapThreshold);
+  redraw();
 }
 
 function renderTopLogitsTableIntoDoc(doc, container, rows, heatmap, titleText, sourceKey, errorKey) {
@@ -980,6 +1046,9 @@ function renderNeuronLogitsTableIntoDoc(doc, container, rows, payload) {
   const activation = Number(payload && payload.activation_value);
   const topK = Number(payload && payload.top_k);
   const hiddenDim = Number(payload && payload.hidden_dim);
+  const usePrefix = Boolean(payload && payload.use_prefix_context);
+  const prefixText = String((payload && payload.prefix_text) || "").trim();
+  const prefixTokenCount = Number(payload && payload.prefix_token_count);
   let threshold = Number(payload && payload.threshold);
   if (!Number.isFinite(threshold)) threshold = 15.0;
   const returnedRows = Number(payload && payload.returned_rows);
@@ -988,6 +1057,32 @@ function renderNeuronLogitsTableIntoDoc(doc, container, rows, payload) {
   meta.className = "muted";
   meta.textContent = `layer=${Number.isFinite(layer) ? layer : "-"}, activation=${Number.isFinite(activation) ? activation : "-"}, threshold=${threshold.toFixed(3)}, top_k=${Number.isFinite(topK) ? topK : "-"}, hidden_dim=${Number.isFinite(hiddenDim) ? hiddenDim : "-"}, returned=${Number.isFinite(returnedRows) ? returnedRows : "-"}, filtered=${Number.isFinite(filteredRows) ? filteredRows : "-"}`;
   container.appendChild(meta);
+  const prefixMeta = doc.createElement("div");
+  prefixMeta.className = "muted";
+  if (usePrefix) {
+    const tokenNote = Number.isFinite(prefixTokenCount) ? `, prefix_token_count=${prefixTokenCount}` : "";
+    prefixMeta.textContent = `use_prefix_context=true${tokenNote}, prefix_text=${prefixText || "-"}`;
+  } else {
+    prefixMeta.textContent = "use_prefix_context=false";
+  }
+  container.appendChild(prefixMeta);
+
+  const controls = doc.createElement("div");
+  controls.className = "muted";
+  controls.style.marginTop = "6px";
+  controls.style.marginBottom = "6px";
+  const thresholdLabel = doc.createElement("span");
+  thresholdLabel.textContent = "Logit Threshold ";
+  const thresholdInput = doc.createElement("input");
+  thresholdInput.type = "number";
+  thresholdInput.min = "-1000";
+  thresholdInput.max = "1000";
+  thresholdInput.step = "0.001";
+  thresholdInput.value = threshold.toFixed(3);
+  thresholdInput.style.width = "100px";
+  controls.appendChild(thresholdLabel);
+  controls.appendChild(thresholdInput);
+  container.appendChild(controls);
 
   const isBatched = Array.isArray(rows) && rows.length > 0 && rows[0] && typeof rows[0] === "object" && Array.isArray(rows[0].rows);
   if (!Array.isArray(rows) || rows.length === 0) {
@@ -1075,23 +1170,41 @@ function renderNeuronLogitsTableIntoDoc(doc, container, rows, payload) {
     return wrap;
   }
 
-  if (isBatched) {
-    const batchHost = doc.createElement("div");
-    container.appendChild(batchHost);
-    rows.forEach((batch, idx) => {
-      const batchRows = Array.isArray(batch && batch.rows) ? batch.rows : [];
-      const startId = Number(batch && batch.start_neuron_id);
-      const endId = Number(batch && batch.end_neuron_id);
-      const head = doc.createElement("div");
-      head.className = "muted";
-      head.textContent = `Batch ${idx}: neuron ${Number.isFinite(startId) ? startId : "-"} - ${Number.isFinite(endId) ? endId : "-"}, rows=${batchRows.length}`;
-      batchHost.appendChild(head);
-      batchHost.appendChild(buildTableForRows(batchRows));
-    });
-    return;
+  const tableHost = doc.createElement("div");
+  container.appendChild(tableHost);
+
+  function renderTables() {
+    tableHost.innerHTML = "";
+    meta.textContent = `layer=${Number.isFinite(layer) ? layer : "-"}, activation=${Number.isFinite(activation) ? activation : "-"}, threshold=${threshold.toFixed(3)}, top_k=${Number.isFinite(topK) ? topK : "-"}, hidden_dim=${Number.isFinite(hiddenDim) ? hiddenDim : "-"}, returned=${Number.isFinite(returnedRows) ? returnedRows : "-"}, filtered=${Number.isFinite(filteredRows) ? filteredRows : "-"}`;
+    if (isBatched) {
+      rows.forEach((batch, idx) => {
+        const batchRows = Array.isArray(batch && batch.rows) ? batch.rows : [];
+        const startId = Number(batch && batch.start_neuron_id);
+        const endId = Number(batch && batch.end_neuron_id);
+        const details = doc.createElement("details");
+        details.open = false;
+        details.style.margin = "6px 0";
+        const summary = doc.createElement("summary");
+        summary.style.cursor = "pointer";
+        summary.className = "muted";
+        summary.textContent = `Batch ${idx}: neuron ${Number.isFinite(startId) ? startId : "-"} - ${Number.isFinite(endId) ? endId : "-"}, rows=${batchRows.length}`;
+        details.appendChild(summary);
+        details.appendChild(buildTableForRows(batchRows));
+        tableHost.appendChild(details);
+      });
+      return;
+    }
+    tableHost.appendChild(buildTableForRows(rows));
   }
 
-  container.appendChild(buildTableForRows(rows));
+  thresholdInput.addEventListener("input", () => {
+    const next = Number(thresholdInput.value);
+    if (!Number.isFinite(next)) return;
+    threshold = next;
+    renderTables();
+  });
+
+  renderTables();
 }
 
 function renderResult(result) {
@@ -1475,6 +1588,13 @@ function renderChatTranscript() {
   chatTranscript.scrollTop = chatTranscript.scrollHeight;
 }
 
+function buildChatRequestMessages(allMessages) {
+  const list = Array.isArray(allMessages) ? allMessages : [];
+  if (list.length <= CHAT_MAX_HISTORY_MESSAGES) return list;
+  // Keep only the most recent turns for faster prompt construction/inference.
+  return list.slice(-CHAT_MAX_HISTORY_MESSAGES);
+}
+
 async function sendChatMessage() {
   const text = (chatInput.value || "").trim();
   if (!text) return;
@@ -1515,11 +1635,12 @@ async function sendChatMessage() {
   setStatus("Chatting");
 
   try {
+    const outboundMessages = buildChatRequestMessages(chatMessages);
     const response = await fetch("/api/chat", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        messages: chatMessages,
+        messages: outboundMessages,
         temperature: Number.isFinite(temp) ? temp : 0.7,
         max_new_tokens: Number.isFinite(maxTokens) ? maxTokens : 128,
         top_p: 0.9,
@@ -1554,6 +1675,9 @@ async function sendChatMessage() {
     }
     if (payload.prompt_mode) {
       appendChatMeta(`Prompt mode: ${String(payload.prompt_mode)}`);
+    }
+    if (chatMessages.length > outboundMessages.length) {
+      appendChatMeta(`Speed mode: sent last ${outboundMessages.length} messages (trimmed context).`);
     }
   } catch (error) {
     appendChatMeta(`Error: ${error.message}`);

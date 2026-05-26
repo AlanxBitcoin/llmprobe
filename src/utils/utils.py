@@ -54,10 +54,13 @@ def write_text(path: str | Path, content: str) -> None:
         fh.write(content)
 
 
-def write_csv(path: str | Path, rows: list[dict]) -> None:
-    if not rows:
+def write_csv(path: str | Path, rows: list[dict], headers: list[str] | None = None) -> None:
+    if headers is None:
+        if not rows:
+            return
+        headers = list(rows[0].keys())
+    if not headers:
         return
-    headers = list(rows[0].keys())
     lines = [",".join(headers)]
     for row in rows:
         values = []

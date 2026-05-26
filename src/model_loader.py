@@ -104,6 +104,20 @@ def load_local_model(config: dict[str, Any]) -> LocalModelBundle:
     model_path = Path(model_cfg["model_name_or_path"])
     tokenizer_path = model_cfg.get("tokenizer_name_or_path") or str(model_path)
     has_cuda = torch.cuda.is_available()
+    if has_cuda:
+        # GPU kernel-level speed knobs for inference throughput.
+        torch.backends.cuda.matmul.allow_tf32 = True
+        torch.backends.cudnn.allow_tf32 = True
+        try:
+            torch.set_float32_matmul_precision("high")
+        except Exception:
+            pass
+        try:
+            torch.backends.cuda.enable_flash_sdp(True)
+            torch.backends.cuda.enable_mem_efficient_sdp(True)
+            torch.backends.cuda.enable_math_sdp(True)
+        except Exception:
+            pass
     dtype_name = model_cfg.get("torch_dtype", "float16")
     resolved_dtype = _resolve_dtype(dtype_name)
     if not has_cuda and resolved_dtype in {torch.float16, torch.bfloat16}:
@@ -138,6 +152,9 @@ def load_local_model(config: dict[str, Any]) -> LocalModelBundle:
             "dtype": resolved_dtype,
             "quantization_config": quantization_config,
         }
+        attn_impl = str(model_cfg.get("attn_implementation", "sdpa")).strip().lower()
+        if attn_impl in {"sdpa", "flash_attention_2", "eager"}:
+            model_kwargs["attn_implementation"] = attn_impl
         if use_device_map is not None:
             model_kwargs["device_map"] = use_device_map
 

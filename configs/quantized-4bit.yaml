@@ -3,6 +3,7 @@ model:
   tokenizer_name_or_path: null
   device_map: "auto"
   torch_dtype: "float16"
+  attn_implementation: "sdpa"
   load_in_4bit: true
   load_in_8bit: false
   trust_remote_code: true
