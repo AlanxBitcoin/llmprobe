@@ -13,10 +13,13 @@ import re
 import numpy as np
 
 from ..config import load_config
-from ..probes.probe_hidden_state import rank_last_layer_logits_from_heatmap
+from ..probes.probe_hidden_state import (
+    get_or_build_random_token_mean_matrix,
+    rank_last_layer_logits_from_heatmap,
+)
 from ..runtime_api import RuntimeRequest, get_runtime_api, start_llama_api
-from ..utils.extract_hidden import extract_single_word_hidden_matrix
-from ..utils.token_hidden_store import protocol_from_flags
+from ..utils.extract_hidden import _get_hidden_store
+from ..utils.token_hidden_store import parse_token_ids_with_bos_alias, protocol_from_flags
 
 
 def _parse_words_csv(words_csv: str) -> list[str]:
@@ -60,22 +63,38 @@ def run_study(
     rows = 0
     cols = 0
 
+    tokenizer = bundle.tokenizer
+    store = _get_hidden_store(bundle, merged_cfg)
+    protocol = str(store.cfg.protocol)
+
+    word_rows: list[dict[str, Any]] = []
+    requested_ids: list[int] = []
+    contains_before: dict[int, bool] = {}
+
     for word in words:
-        item = extract_single_word_hidden_matrix(
-            bundle,
-            word=word,
-            config=merged_cfg,
-        )
-        if not isinstance(item, dict) or not item.get("ok"):
+        token_ids = parse_token_ids_with_bos_alias(tokenizer, word)
+        if len(token_ids) != 1:
             failed_items.append(
                 {
                     "word": word,
-                    "reason": (item or {}).get("reason", "unknown") if isinstance(item, dict) else "unknown",
-                    "token_count": (item or {}).get("token_count") if isinstance(item, dict) else None,
+                    "reason": "single_token_required",
+                    "token_count": int(len(token_ids)),
                 }
             )
             continue
-        matrix = np.asarray(item.get("matrix") or [], dtype=np.float32)
+        token_id = int(token_ids[0])
+        word_rows.append({"word": word, "token_id": token_id})
+        requested_ids.append(token_id)
+        if token_id not in contains_before:
+            contains_before[token_id] = bool(store.contains(token_id))
+
+    batch_layers = store.get_or_compute_layers_batch(bundle, requested_ids, flush=True)
+
+    for entry in word_rows:
+        word = str(entry["word"])
+        token_id = int(entry["token_id"])
+        raw_matrix = batch_layers.get(token_id)
+        matrix = np.asarray(raw_matrix, dtype=np.float32) if raw_matrix is not None else np.asarray([], dtype=np.float32)
         if matrix.ndim != 2 or matrix.size == 0:
             failed_items.append({"word": word, "reason": "invalid_matrix"})
             continue
@@ -91,11 +110,9 @@ def run_study(
                 }
             )
             continue
-        ok_items.append({"word": word, "matrix": matrix, "cache_source": str(item.get("cache_source") or "")})
-        if item.get("cache_source"):
-            sources.add(str(item.get("cache_source")))
-        if not protocol and item.get("protocol"):
-            protocol = str(item.get("protocol"))
+        cache_source = "disk" if bool(contains_before.get(token_id, False)) else "model"
+        ok_items.append({"word": word, "matrix": matrix, "cache_source": cache_source})
+        sources.add(cache_source)
 
     if not ok_items:
         return {
@@ -146,8 +163,64 @@ def run_study(
         )
     score_matrix = np.nan_to_num(score_matrix, nan=max_value, posinf=max_value, neginf=-max_value)
     score_matrix = np.clip(score_matrix, -max_value, max_value)
+
+    random_ref = get_or_build_random_token_mean_matrix(
+        config=cfg,
+        include_bos=bool(include_bos),
+        include_assistant=bool(include_assistant),
+        sample_size=1000,
+        seed=20260526,
+    )
+    random_mean_matrix = None
+    random_diff_matrix = None
+    random_ref_source = "error"
+    random_ref_error = None
+    random_ref_size = 0
+    random_ref_bin_path = ""
+    if isinstance(random_ref, dict) and random_ref.get("ok"):
+        random_mean_matrix = np.asarray(random_ref.get("matrix"), dtype=np.float32)
+        if random_mean_matrix.shape == mean_matrix.shape:
+            random_diff_matrix = mean_matrix - random_mean_matrix
+            random_ref_source = str(random_ref.get("cache_source") or "unknown")
+            random_ref_size = int(random_ref.get("sample_size") or 0)
+            random_ref_bin_path = str(random_ref.get("bin_path") or "")
+        else:
+            random_ref_error = (
+                f"random_ref_shape_mismatch:{list(random_mean_matrix.shape)} != {list(mean_matrix.shape)}"
+            )
+            random_mean_matrix = None
+            random_diff_matrix = None
+    else:
+        random_ref_error = str((random_ref or {}).get("reason") if isinstance(random_ref, dict) else "unknown")
+
     cache_source = next(iter(sources)) if len(sources) == 1 else ("mixed" if sources else "unknown")
     row_labels = ["embedding"] + [f"layer_{idx}" for idx in range(1, int(score_matrix.shape[0]))]
+
+    heatmaps = [
+        {"key": "mean", "title": "Mean Hidden State Heatmap", "matrix": mean_matrix.tolist()},
+        {"key": "score", "title": "Mean*Abs(Mean)/MAD Heatmap", "matrix": score_matrix.tolist()},
+        {
+            "key": "mean_any_lt_0_1_zero",
+            "title": "Mean Heatmap (Any |v|<0.1 OR Opposite Sign -> 0)",
+            "matrix": mean_any_lt_0_1_zero.tolist(),
+        },
+    ]
+    if random_mean_matrix is not None:
+        heatmaps.append(
+            {
+                "key": "random1000_mean",
+                "title": "Random 1000 Tokens Mean Heatmap",
+                "matrix": random_mean_matrix.tolist(),
+            }
+        )
+    if random_diff_matrix is not None:
+        heatmaps.append(
+            {
+                "key": "mean_minus_random1000",
+                "title": "Batch Mean - Random1000 Mean Heatmap",
+                "matrix": random_diff_matrix.tolist(),
+            }
+        )
 
     heatmap: dict[str, Any] = {
         "ok": True,
@@ -164,15 +237,7 @@ def run_study(
         "matrix": mean_matrix.tolist(),
         # Secondary matrix: emphasized score matrix.
         "matrix_score": score_matrix.tolist(),
-        "heatmaps": [
-            {"key": "mean", "title": "Mean Hidden State Heatmap", "matrix": mean_matrix.tolist()},
-            {"key": "score", "title": "Mean*Abs(Mean)/MAD Heatmap", "matrix": score_matrix.tolist()},
-            {
-                "key": "mean_any_lt_0_1_zero",
-                "title": "Mean Heatmap (Any |v|<0.1 OR Opposite Sign -> 0)",
-                "matrix": mean_any_lt_0_1_zero.tolist(),
-            },
-        ],
+        "heatmaps": heatmaps,
         "tokens": [],
         "cache_source": cache_source,
         "protocol": protocol,
@@ -180,6 +245,10 @@ def run_study(
         "include_assistant": bool(include_assistant),
         "batch_reduce": "mean_mul_abs_mean_div_mad",
         "batch_reduce_max_value": max_value,
+        "random_ref_source": random_ref_source,
+        "random_ref_sample_size": int(random_ref_size),
+        "random_ref_error": random_ref_error,
+        "random_ref_bin_path": random_ref_bin_path,
     }
 
     # Logits must be ranked from the mean matrix (not from score matrix).

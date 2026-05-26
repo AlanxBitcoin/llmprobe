@@ -469,6 +469,61 @@ class TokenHiddenStore:
         self._write_layers(token_id, computed)
         return np.asarray(computed, dtype=np.float32)
 
+    def get_or_compute_layers_batch(self, bundle, token_ids: list[int], *, flush: bool = True) -> dict[int, np.ndarray]:
+        """Batch read-through for many single-token requests.
+
+        Returns a dict keyed by token_id with float32 matrices [n_layers, hidden_dim].
+        Cache hits are served immediately; misses are grouped into one GPU forward.
+        """
+        if not token_ids:
+            return {}
+        ordered_ids: list[int] = []
+        seen: set[int] = set()
+        for raw in token_ids:
+            tid = int(raw)
+            self._validate_token_id(tid)
+            if tid in seen:
+                continue
+            seen.add(tid)
+            ordered_ids.append(tid)
+
+        out: dict[int, np.ndarray] = {}
+        misses: list[int] = []
+        for tid in ordered_ids:
+            cached = self.get_all_layers(tid)
+            if cached is not None:
+                out[tid] = cached
+            else:
+                misses.append(tid)
+
+        # For BOS-required protocol, ensure BOS can be reused by others.
+        if self.cfg.protocol == "bos1_assistant0":
+            bos_id = self.tokenizer.bos_token_id
+            if bos_id is not None:
+                bos_id = int(bos_id)
+                if bos_id not in out and bos_id not in misses and any(t != bos_id for t in misses):
+                    misses.insert(0, bos_id)
+
+        remaining: list[int] = []
+        for tid in misses:
+            if self._recover_done_from_data(tid):
+                recovered = self.get_all_layers(tid)
+                if recovered is not None:
+                    out[tid] = recovered
+                    continue
+            remaining.append(tid)
+
+        if remaining:
+            batch_inputs = [self._build_protocol_input_ids(tid) for tid in remaining]
+            batch_layers = self._compute_layers_for_input_ids_batch(bundle, batch_inputs)
+            for tid, layers in zip(remaining, batch_layers):
+                self._write_layers(int(tid), np.asarray(layers, dtype=np.float32))
+                out[int(tid)] = np.asarray(layers, dtype=np.float32)
+            if flush:
+                self.flush()
+
+        return {tid: out[tid] for tid in ordered_ids if tid in out}
+
     def get_word_layers(self, bundle, word: str) -> np.ndarray:
         """Unified store entrypoint for word-level callers.
 
@@ -512,6 +567,44 @@ class TokenHiddenStore:
                     f"Hidden dim mismatch at layer {idx}: expected {self.cfg.hidden_dim}, got {vector.shape[0]}"
                 )
             layers[idx] = vector
+        return layers
+
+    def _compute_layers_for_input_ids_batch(self, bundle, batch_input_ids: list[list[int]]) -> np.ndarray:
+        if not batch_input_ids:
+            return np.zeros((0, self.cfg.n_layers, self.cfg.hidden_dim), dtype=np.float32)
+        model = bundle.model
+        device = next(model.parameters()).device
+        batch_size = len(batch_input_ids)
+        lengths = [len(x) for x in batch_input_ids]
+        max_len = max(lengths)
+        if max_len <= 0:
+            raise ValueError("batch_input_ids contains an empty sequence")
+
+        pad_id = int(getattr(self.tokenizer, "pad_token_id", None) or getattr(self.tokenizer, "eos_token_id", 0) or 0)
+        input_ids = torch.full((batch_size, max_len), fill_value=pad_id, dtype=torch.long, device=device)
+        attention_mask = torch.zeros((batch_size, max_len), dtype=torch.long, device=device)
+        for i, seq in enumerate(batch_input_ids):
+            seq_ids = [int(x) for x in seq]
+            seq_len = len(seq_ids)
+            input_ids[i, :seq_len] = torch.tensor(seq_ids, dtype=torch.long, device=device)
+            attention_mask[i, :seq_len] = 1
+
+        with torch.no_grad():
+            outputs = model(input_ids=input_ids, attention_mask=attention_mask, output_hidden_states=True)
+
+        raw_layers = outputs.hidden_states
+        layers = np.zeros((batch_size, self.cfg.n_layers, self.cfg.hidden_dim), dtype=np.float32)
+        copy_layers = min(len(raw_layers), self.cfg.n_layers)
+        last_positions = torch.tensor([x - 1 for x in lengths], dtype=torch.long, device=device)
+        batch_indices = torch.arange(batch_size, dtype=torch.long, device=device)
+        for idx in range(copy_layers):
+            h = raw_layers[idx]
+            selected = h[batch_indices, last_positions, :].detach().float().cpu().numpy()
+            if selected.shape[1] != self.cfg.hidden_dim:
+                raise ValueError(
+                    f"Hidden dim mismatch at layer {idx}: expected {self.cfg.hidden_dim}, got {selected.shape[1]}"
+                )
+            layers[:, idx, :] = selected
         return layers
 
     @staticmethod

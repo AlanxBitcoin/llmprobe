@@ -3,7 +3,9 @@ from __future__ import annotations
 # Probe: single-word hidden-state only.
 # Keep this file focused on store-first single-word read + baseline logits ranking.
 
+from pathlib import Path
 from typing import Any
+import json
 
 import numpy as np
 import torch
@@ -11,7 +13,13 @@ import torch
 from ..runtime_api import RuntimeRequest, get_runtime_api, start_llama_api
 from ..utils.extract_hidden import extract_single_word_hidden_matrix_store_first
 from ..utils.logits import rank_vector_logits_and_cosine
-from ..utils.token_hidden_store import build_protocol_input_ids, parse_token_ids_with_bos_alias
+from ..utils.token_hidden_store import (
+    TokenHiddenStore,
+    build_hidden_store_config,
+    build_protocol_input_ids,
+    parse_token_ids_with_bos_alias,
+    protocol_from_flags,
+)
 
 
 def _get_or_start_runtime_api(config: dict[str, Any]):
@@ -193,3 +201,140 @@ def fetch_sentence_last_token_hidden_state(
             "last_token_attention_by_layer": [],
         }
 
+
+def get_or_build_random_token_mean_matrix(
+    *,
+    config: dict[str, Any],
+    include_bos: bool,
+    include_assistant: bool,
+    sample_size: int = 1000,
+    seed: int = 20260526,
+) -> dict[str, Any]:
+    """Build/read cached random-token hidden-state mean matrix.
+
+    Cache files:
+      - data/cache/random_token_mean.{protocol}.f32.bin
+      - data/cache/random_token_mean.{protocol}.meta.json
+    """
+    try:
+        api = _get_or_start_runtime_api(config)
+        bundle = api.execute_model_call(RuntimeRequest(config=config, force_reload=False)).bundle
+        tokenizer = bundle.tokenizer
+        protocol = protocol_from_flags(
+            bos=bool(include_bos),
+            assistant=bool(include_assistant) and bool(include_bos),
+        )
+
+        merged_cfg = dict(config or {})
+        hs_cfg = dict((merged_cfg.get("hidden_store") or {}))
+        hs_cfg["protocol"] = protocol
+        merged_cfg["hidden_store"] = hs_cfg
+        store_cfg = build_hidden_store_config(merged_cfg, bundle=bundle)
+        store = TokenHiddenStore(store_cfg, tokenizer)
+
+        cache_dir = store_cfg.data_file.parent
+        bin_path = cache_dir / f"random_token_mean.{protocol}.f32.bin"
+        meta_path = cache_dir / f"random_token_mean.{protocol}.meta.json"
+        rows = int(store_cfg.n_layers)
+        cols = int(store_cfg.hidden_dim)
+        expected_count = rows * cols
+        target_n = int(max(1, sample_size))
+
+        if bin_path.exists() and meta_path.exists():
+            try:
+                meta = json.loads(meta_path.read_text(encoding="utf-8"))
+                raw = np.fromfile(bin_path, dtype=np.float32)
+                if raw.size == expected_count:
+                    matrix = raw.reshape(rows, cols)
+                    return {
+                        "ok": True,
+                        "cache_source": "bin",
+                        "protocol": protocol,
+                        "sample_size": int(meta.get("sample_size", target_n)),
+                        "seed": int(meta.get("seed", seed)),
+                        "matrix": matrix,
+                        "token_ids": [int(x) for x in (meta.get("token_ids") or [])],
+                        "bin_path": str(bin_path),
+                    }
+            except Exception:
+                pass
+
+        rng = np.random.default_rng(int(seed))
+        all_ids = np.arange(int(store.token_count), dtype=np.int32)
+        rng.shuffle(all_ids)
+        picked: list[int] = []
+        picked_set: set[int] = set()
+
+        def _token_is_word_like(tok_id: int) -> bool:
+            token = str(tokenizer.convert_ids_to_tokens(int(tok_id)))
+            if not token:
+                return False
+            if token.startswith("<|") and token.endswith("|>"):
+                return False
+            text = str(tokenizer.decode([int(tok_id)], clean_up_tokenization_spaces=False))
+            if not text or not text.strip():
+                return False
+            return True
+
+        for tok_id in all_ids.tolist():
+            tid = int(tok_id)
+            if tid in picked_set:
+                continue
+            if not _token_is_word_like(tid):
+                continue
+            picked.append(tid)
+            picked_set.add(tid)
+            if len(picked) >= target_n:
+                break
+        if len(picked) < target_n:
+            for tok_id in all_ids.tolist():
+                tid = int(tok_id)
+                if tid in picked_set:
+                    continue
+                picked.append(tid)
+                picked_set.add(tid)
+                if len(picked) >= target_n:
+                    break
+        if not picked:
+            return {"ok": False, "reason": "no_token_candidates"}
+
+        sum_matrix = np.zeros((rows, cols), dtype=np.float64)
+        chunk_size = 256
+        for offset in range(0, len(picked), chunk_size):
+            chunk = picked[offset : offset + chunk_size]
+            batch = store.get_or_compute_layers_batch(bundle, chunk, flush=True)
+            for tid in chunk:
+                arr = np.asarray(batch.get(int(tid)), dtype=np.float32)
+                if arr.shape != (rows, cols):
+                    return {
+                        "ok": False,
+                        "reason": "shape_mismatch",
+                        "expected_shape": [rows, cols],
+                        "actual_shape": [int(arr.shape[0]), int(arr.shape[1])],
+                    }
+                sum_matrix += arr.astype(np.float64, copy=False)
+        mean_matrix = (sum_matrix / float(len(picked))).astype(np.float32)
+
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        mean_matrix.tofile(bin_path)
+        meta_payload = {
+            "protocol": protocol,
+            "sample_size": int(len(picked)),
+            "seed": int(seed),
+            "shape": [rows, cols],
+            "dtype": "float32",
+            "token_ids": [int(x) for x in picked],
+        }
+        meta_path.write_text(json.dumps(meta_payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        return {
+            "ok": True,
+            "cache_source": "computed",
+            "protocol": protocol,
+            "sample_size": int(len(picked)),
+            "seed": int(seed),
+            "matrix": mean_matrix,
+            "token_ids": [int(x) for x in picked],
+            "bin_path": str(bin_path),
+        }
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "reason": str(exc)}
