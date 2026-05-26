@@ -272,6 +272,9 @@ def execute_chat_completion(
     max_new_tokens: int = 128,
     temperature: float = 0.7,
     top_p: float = 0.9,
+    include_assistant_marker: bool = True,
+    layer_neuron_change: dict[str, Any] | None = None,
+    ffn_neuron_change: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Run one chat turn against the currently loaded model bundle."""
     started_at = time.time()
@@ -315,18 +318,40 @@ def execute_chat_completion(
                 "finished_at": time.time(),
             }
 
-        chat_payload = tokenizer.apply_chat_template(
-            normalized,
-            tokenize=True,
-            add_generation_prompt=True,
-            return_tensors="pt",
-        )
-        if hasattr(chat_payload, "get"):
-            input_ids = chat_payload.get("input_ids")
-            attention_mask = chat_payload.get("attention_mask")
+        prompt_mode = "chat_with_assistant_marker" if bool(include_assistant_marker) else "raw_last_user_no_assistant_marker"
+        if bool(include_assistant_marker):
+            chat_payload = tokenizer.apply_chat_template(
+                normalized,
+                tokenize=True,
+                add_generation_prompt=True,
+                return_tensors="pt",
+            )
+            if hasattr(chat_payload, "get"):
+                input_ids = chat_payload.get("input_ids")
+                attention_mask = chat_payload.get("attention_mask")
+            else:
+                input_ids = chat_payload
+                attention_mask = None
         else:
-            input_ids = chat_payload
-            attention_mask = None
+            last_user = ""
+            for item in reversed(normalized):
+                if str(item.get("role")) == "user":
+                    last_user = str(item.get("content") or "").strip()
+                    break
+            if not last_user:
+                return {
+                    "status": "error",
+                    "error": "No user message available for no-assistant-marker mode.",
+                    "started_at": started_at,
+                    "finished_at": time.time(),
+                }
+            raw_payload = tokenizer(
+                last_user,
+                return_tensors="pt",
+                add_special_tokens=True,
+            )
+            input_ids = raw_payload.get("input_ids") if hasattr(raw_payload, "get") else None
+            attention_mask = raw_payload.get("attention_mask") if hasattr(raw_payload, "get") else None
         if input_ids is None:
             raise ValueError("Tokenizer did not return input_ids for chat template")
         if not torch.is_tensor(input_ids):
@@ -367,8 +392,190 @@ def execute_chat_completion(
             gen_kwargs["temperature"] = safe_temperature
             gen_kwargs["top_p"] = safe_top_p
 
-        with torch.no_grad():
-            output_ids = model.generate(**gen_kwargs)
+        hook_handle = None
+        state: dict[str, Any] | None = None
+        embed_hook_handle = None
+        forward_input_ids: dict[str, torch.Tensor | None] = {"value": None}
+        ffn_hook_handle = None
+        ffn_state: dict[str, Any] | None = None
+        applied_layer_neuron_change: dict[str, Any] | None = None
+        applied_ffn_neuron_change: dict[str, Any] | None = None
+        if isinstance(layer_neuron_change, dict) and bool(layer_neuron_change.get("enabled", False)):
+            raw_layer = layer_neuron_change.get("layer")
+            raw_neuron = layer_neuron_change.get("neuron")
+            raw_value = layer_neuron_change.get("value")
+            raw_token = str(layer_neuron_change.get("token") or "").strip()
+            if raw_layer is None or raw_neuron is None or raw_value is None:
+                raise ValueError("layer_neuron_change requires layer, neuron, value when enabled=true")
+            if not raw_token:
+                raise ValueError("layer_neuron_change requires token when enabled=true")
+            layer_idx = int(raw_layer)
+            neuron_idx = int(raw_neuron)
+            neuron_value = float(raw_value)
+            base_model = getattr(model, "model", None)
+            layers = getattr(base_model, "layers", None)
+            if layers is None:
+                layers = getattr(model, "layers", None)
+            if layers is None:
+                raise ValueError("Model does not expose decoder layers.")
+            num_layers = int(len(layers))
+            if not (0 <= layer_idx < num_layers):
+                raise ValueError(f"invalid layer index: {layer_idx}, valid=[0,{num_layers - 1}]")
+
+            hidden_size = int(getattr(getattr(model, "config", None), "hidden_size", 0) or 0)
+            if hidden_size <= 0:
+                lm_head = getattr(model, "lm_head", None)
+                hidden_size = int(getattr(lm_head, "in_features", 0) or 0)
+            if hidden_size <= 0:
+                raise ValueError("Unable to infer model hidden size.")
+            if not (0 <= neuron_idx < hidden_size):
+                raise ValueError(f"invalid neuron id: {neuron_idx}, valid=[0,{hidden_size - 1}]")
+
+            token_ids: list[int]
+            try:
+                token_ids = [int(raw_token)]
+            except ValueError:
+                enc = tokenizer.encode(raw_token, add_special_tokens=False)
+                token_ids = [int(x) for x in enc]
+                if len(token_ids) != 1:
+                    raise ValueError(
+                        f"trigger token must map to exactly 1 token, got {len(token_ids)} for {raw_token!r}"
+                    )
+            target_token_ids = set(token_ids)
+
+            state = {"applied_count": 0}
+            target_layer = layers[layer_idx]
+
+            embed_tokens = getattr(getattr(model, "model", None), "embed_tokens", None)
+            if embed_tokens is not None:
+                def _embed_pre_hook(_module, inputs):
+                    if inputs and torch.is_tensor(inputs[0]):
+                        forward_input_ids["value"] = inputs[0].detach()
+                    else:
+                        forward_input_ids["value"] = None
+                    return inputs
+
+                embed_hook_handle = embed_tokens.register_forward_pre_hook(_embed_pre_hook)
+
+            def _one_time_prefill_hook(_module, _inputs, output):
+                ids = forward_input_ids.get("value")
+                if ids is None:
+                    return output
+                ids = ids.to(device="cpu", dtype=torch.long)
+                if isinstance(output, torch.Tensor):
+                    batch = min(int(output.shape[0]), int(ids.shape[0]))
+                    seq = min(int(output.shape[1]), int(ids.shape[1]))
+                    if batch <= 0 or seq <= 0:
+                        return output
+                    trimmed = ids[:batch, :seq]
+                    mask = torch.zeros_like(trimmed, dtype=torch.bool)
+                    for tid in target_token_ids:
+                        mask |= (trimmed == int(tid))
+                    if torch.any(mask):
+                        b_idx, s_idx = torch.where(mask)
+                        output[b_idx.to(device=output.device), s_idx.to(device=output.device), neuron_idx] = neuron_value
+                        state["applied_count"] += int(b_idx.numel())
+                    return output
+                if isinstance(output, tuple) and output:
+                    first = output[0]
+                    if isinstance(first, torch.Tensor):
+                        batch = min(int(first.shape[0]), int(ids.shape[0]))
+                        seq = min(int(first.shape[1]), int(ids.shape[1]))
+                        if batch <= 0 or seq <= 0:
+                            return output
+                        trimmed = ids[:batch, :seq]
+                        mask = torch.zeros_like(trimmed, dtype=torch.bool)
+                        for tid in target_token_ids:
+                            mask |= (trimmed == int(tid))
+                        if torch.any(mask):
+                            b_idx, s_idx = torch.where(mask)
+                            first[b_idx.to(device=first.device), s_idx.to(device=first.device), neuron_idx] = neuron_value
+                            state["applied_count"] += int(b_idx.numel())
+                        return (first, *output[1:])
+                return output
+
+            hook_handle = target_layer.register_forward_hook(_one_time_prefill_hook)
+            applied_layer_neuron_change = {
+                "enabled": True,
+                "layer": int(layer_idx),
+                "neuron": int(neuron_idx),
+                "value": float(neuron_value),
+                "token": raw_token,
+                "token_ids": list(sorted(target_token_ids)),
+            }
+
+        if isinstance(ffn_neuron_change, dict) and bool(ffn_neuron_change.get("enabled", False)):
+            raw_layer = ffn_neuron_change.get("layer")
+            raw_neuron = ffn_neuron_change.get("neuron")
+            raw_value = ffn_neuron_change.get("value")
+            if raw_layer is None or raw_neuron is None or raw_value is None:
+                raise ValueError("ffn_neuron_change requires layer, neuron, value when enabled=true")
+            ffn_layer_idx = int(raw_layer)
+            ffn_neuron_idx = int(raw_neuron)
+            ffn_value = float(raw_value)
+
+            base_model = getattr(model, "model", None)
+            layers = getattr(base_model, "layers", None)
+            if layers is None:
+                layers = getattr(model, "layers", None)
+            if layers is None:
+                raise ValueError("Model does not expose decoder layers.")
+            num_layers = int(len(layers))
+            if not (0 <= ffn_layer_idx < num_layers):
+                raise ValueError(f"invalid ffn layer index: {ffn_layer_idx}, valid=[0,{num_layers - 1}]")
+
+            layer = layers[ffn_layer_idx]
+            mlp = getattr(layer, "mlp", None)
+            down_proj = getattr(mlp, "down_proj", None) if mlp is not None else None
+            if down_proj is None:
+                raise ValueError(f"layer {ffn_layer_idx} does not expose mlp.down_proj")
+            ffn_dim = int(getattr(down_proj, "in_features", 0) or 0)
+            if ffn_dim <= 0:
+                weight = getattr(down_proj, "weight", None)
+                if weight is None or weight.ndim != 2:
+                    raise ValueError(f"layer {ffn_layer_idx} down_proj has invalid weight")
+                ffn_dim = int(weight.shape[1])
+            if not (0 <= ffn_neuron_idx < ffn_dim):
+                raise ValueError(f"invalid ffn neuron id: {ffn_neuron_idx}, valid=[0,{ffn_dim - 1}]")
+
+            prompt_seq_len = int(input_ids.shape[1])
+            ffn_state = {"applied": False}
+
+            def _one_time_ffn_prehook(_module, inputs):
+                if ffn_state["applied"]:
+                    return inputs
+                if not inputs:
+                    return inputs
+                first = inputs[0]
+                if not isinstance(first, torch.Tensor):
+                    return inputs
+                if int(first.shape[1]) >= prompt_seq_len:
+                    first[:, -1, ffn_neuron_idx] = ffn_value
+                    ffn_state["applied"] = True
+                return (first, *inputs[1:])
+
+            ffn_hook_handle = down_proj.register_forward_pre_hook(_one_time_ffn_prehook)
+            applied_ffn_neuron_change = {
+                "enabled": True,
+                "layer": int(ffn_layer_idx),
+                "neuron": int(ffn_neuron_idx),
+                "value": float(ffn_value),
+            }
+
+        try:
+            with torch.no_grad():
+                output_ids = model.generate(**gen_kwargs)
+        finally:
+            if hook_handle is not None:
+                hook_handle.remove()
+            if embed_hook_handle is not None:
+                embed_hook_handle.remove()
+            if applied_layer_neuron_change is not None:
+                applied_layer_neuron_change["applied_count"] = int((state or {}).get("applied_count", 0))
+            if ffn_hook_handle is not None:
+                ffn_hook_handle.remove()
+            if applied_ffn_neuron_change is not None:
+                applied_ffn_neuron_change["applied_once_on_prompt_last_token"] = bool((ffn_state or {}).get("applied", False))
         prompt_len = int(input_ids.shape[1])
         new_ids = output_ids[0, prompt_len:]
         text = tokenizer.decode(new_ids, skip_special_tokens=True, clean_up_tokenization_spaces=False).strip()
@@ -379,12 +586,16 @@ def execute_chat_completion(
             "status": "ok",
             "assistant_message": text,
             "generated_token_count": int(new_ids.shape[0]),
+            "include_assistant_marker": bool(include_assistant_marker),
+            "prompt_mode": prompt_mode,
             "generation": {
                 "do_sample": bool(do_sample),
                 "temperature": safe_temperature if do_sample else 0.0,
                 "top_p": safe_top_p if do_sample else 1.0,
                 "max_new_tokens": safe_max_new_tokens,
             },
+            "layer_neuron_change": applied_layer_neuron_change or {"enabled": False},
+            "ffn_neuron_change": applied_ffn_neuron_change or {"enabled": False},
             "started_at": started_at,
             "finished_at": time.time(),
         }

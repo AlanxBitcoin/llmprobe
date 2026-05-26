@@ -1062,3 +1062,55 @@ def build_ffn_post_silu_neuron_output_matrix(
     with torch.no_grad():
         out = down_proj(one_hot)  # [B,1,H]
     return out[:, 0, :].detach()
+
+
+def register_layer_neuron_value_override_hook(
+    model,
+    *,
+    layer_idx: int,
+    neuron_idx: int,
+    neuron_value: float,
+):
+    """
+    Register a forward hook on one decoder layer to force a hidden-state neuron value.
+
+    Behavior:
+    - Hook is applied to the specified decoder layer output tensor.
+    - For each forward call, all tokens in that layer output use the forced value at neuron_idx.
+    - Works for tensor output and tuple output (modifies first tensor item).
+    """
+    base_model = getattr(model, "model", None)
+    layers = getattr(base_model, "layers", None)
+    if layers is None:
+        layers = getattr(model, "layers", None)
+    if layers is None:
+        raise ValueError("Model does not expose decoder layers via `model.layers` or `layers`.")
+
+    n_layers = int(len(layers))
+    if not (0 <= int(layer_idx) < n_layers):
+        raise ValueError(f"layer_idx out of range: {layer_idx}, valid=[0,{n_layers - 1}]")
+
+    hidden_size = int(getattr(getattr(model, "config", None), "hidden_size", 0) or 0)
+    if hidden_size <= 0:
+        lm_head = getattr(model, "lm_head", None)
+        hidden_size = int(getattr(lm_head, "in_features", 0) or 0)
+    if hidden_size <= 0:
+        raise ValueError("Unable to infer hidden size from model.")
+    if not (0 <= int(neuron_idx) < hidden_size):
+        raise ValueError(f"neuron_idx out of range: {neuron_idx}, valid=[0,{hidden_size - 1}]")
+
+    forced_value = float(neuron_value)
+    target_layer = layers[int(layer_idx)]
+
+    def _hook(_module, _inputs, output):
+        if isinstance(output, torch.Tensor):
+            output[..., int(neuron_idx)] = forced_value
+            return output
+        if isinstance(output, tuple) and output:
+            first = output[0]
+            if isinstance(first, torch.Tensor):
+                first[..., int(neuron_idx)] = forced_value
+                return (first, *output[1:])
+        return output
+
+    return target_layer.register_forward_hook(_hook)

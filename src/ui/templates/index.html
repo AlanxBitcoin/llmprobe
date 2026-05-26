@@ -56,6 +56,46 @@
               <span>Max Tokens</span>
               <input id="chatMaxTokens" type="number" min="1" max="1024" step="1" value="128" />
             </label>
+            <label class="chat-setting">
+              <span>Include Assistant Marker</span>
+              <input id="chatIncludeAssistantMarker" type="checkbox" checked />
+            </label>
+            <label class="chat-setting">
+              <span>Layer Neuron Change</span>
+              <input id="chatLayerNeuronEnabled" type="checkbox" />
+            </label>
+            <label class="chat-setting">
+              <span>Neuron Layer</span>
+              <input id="chatLayerNeuronLayer" type="number" min="0" step="1" value="30" />
+            </label>
+            <label class="chat-setting">
+              <span>Neuron ID</span>
+              <input id="chatLayerNeuronId" type="number" min="0" step="1" value="0" />
+            </label>
+            <label class="chat-setting">
+              <span>Neuron Value</span>
+              <input id="chatLayerNeuronValue" type="number" step="0.01" value="0" />
+            </label>
+            <label class="chat-setting">
+              <span>Trigger Token</span>
+              <input id="chatLayerNeuronToken" type="text" value="" placeholder="token text or token id" />
+            </label>
+            <label class="chat-setting">
+              <span>FFN Neuron Change</span>
+              <input id="chatFfnNeuronEnabled" type="checkbox" />
+            </label>
+            <label class="chat-setting">
+              <span>FFN Layer</span>
+              <input id="chatFfnNeuronLayer" type="number" min="0" step="1" value="30" />
+            </label>
+            <label class="chat-setting">
+              <span>FFN Neuron ID</span>
+              <input id="chatFfnNeuronId" type="number" min="0" step="1" value="0" />
+            </label>
+            <label class="chat-setting">
+              <span>FFN Value</span>
+              <input id="chatFfnNeuronValue" type="number" step="0.01" value="0" />
+            </label>
           </div>
           <div class="chat-composer">
             <textarea id="chatInput" rows="4" placeholder="Type your message..."></textarea>

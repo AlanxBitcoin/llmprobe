@@ -245,12 +245,7 @@ def start_app(
     runtime_cfg = (effective_config or {}).get("runtime", {})
     ui_cfg = (effective_config or {}).get("ui", {})
     hidden_store_cfg = dict((effective_config or {}).get("hidden_store") or {})
-
-    if bool(hidden_store_cfg.get("init_on_main_boot", True)):
-        try:
-            preload_hidden_store_from_disk(effective_config)
-        except Exception as exc:  # noqa: BLE001 - startup continues even if preload fails.
-            print(f"[startup] hidden_store disk init skipped: {exc}")
+    should_init_hidden_store_disk = bool(hidden_store_cfg.get("init_on_main_boot", True))
 
     should_start_llama = bool(runtime_cfg.get("start_llama_api_on_boot", True)) if start_llama_runtime is None else bool(start_llama_runtime)
 
@@ -268,16 +263,30 @@ def start_app(
             target=run_ui_server,
             kwargs={"config": ui_runtime_config, "config_path": config_path},
             name="ui-server",
-            daemon=False,
+            daemon=True,
         )
         ui_thread.start()
+
+        if should_init_hidden_store_disk:
+            _start_hidden_store_disk_init_background(effective_config)
 
         if should_start_llama:
             _start_llama_background(effective_config, preload_hidden=bool(hidden_store_cfg.get("preload_on_boot", True)))
 
-        # Keep process alive with the UI server thread lifecycle.
-        ui_thread.join()
+        # Keep process alive while still allowing Ctrl+C to stop the app cleanly.
+        try:
+            while ui_thread.is_alive():
+                ui_thread.join(timeout=0.5)
+        except KeyboardInterrupt:
+            print("\nStopping app...")
+            return
         return
+
+    if should_init_hidden_store_disk:
+        try:
+            preload_hidden_store_from_disk(effective_config)
+        except Exception as exc:  # noqa: BLE001 - startup continues even if preload fails.
+            print(f"[startup] hidden_store disk init skipped: {exc}")
 
     if should_start_llama:
         api = start_llama_api(effective_config)
@@ -287,6 +296,18 @@ def start_app(
             except Exception as exc:  # noqa: BLE001 - preload failure should not block startup.
                 print(f"[startup] hidden_store preload skipped: {exc}")
     print("No server started because ui.enabled/start_server_on_boot is false.")
+
+
+def _start_hidden_store_disk_init_background(config: dict[str, Any]) -> None:
+    def _runner() -> None:
+        try:
+            preload_hidden_store_from_disk(config)
+            print("[startup] hidden_store disk init finished.")
+        except Exception as exc:  # noqa: BLE001
+            print(f"[startup] hidden_store disk init skipped: {exc}")
+
+    thread = threading.Thread(target=_runner, name="hidden-store-disk-init", daemon=True)
+    thread.start()
 
 
 def _start_llama_background(config: dict[str, Any], *, preload_hidden: bool) -> None:

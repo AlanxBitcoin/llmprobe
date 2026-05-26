@@ -33,6 +33,16 @@ const chatSendButton = document.getElementById("chatSendButton");
 const chatClearButton = document.getElementById("chatClearButton");
 const chatTemperature = document.getElementById("chatTemperature");
 const chatMaxTokens = document.getElementById("chatMaxTokens");
+const chatIncludeAssistantMarker = document.getElementById("chatIncludeAssistantMarker");
+const chatLayerNeuronEnabled = document.getElementById("chatLayerNeuronEnabled");
+const chatLayerNeuronLayer = document.getElementById("chatLayerNeuronLayer");
+const chatLayerNeuronId = document.getElementById("chatLayerNeuronId");
+const chatLayerNeuronValue = document.getElementById("chatLayerNeuronValue");
+const chatLayerNeuronToken = document.getElementById("chatLayerNeuronToken");
+const chatFfnNeuronEnabled = document.getElementById("chatFfnNeuronEnabled");
+const chatFfnNeuronLayer = document.getElementById("chatFfnNeuronLayer");
+const chatFfnNeuronId = document.getElementById("chatFfnNeuronId");
+const chatFfnNeuronValue = document.getElementById("chatFfnNeuronValue");
 const openHistoryButton = document.createElement("button");
 openHistoryButton.type = "button";
 openHistoryButton.textContent = "Open History Result";
@@ -459,6 +469,7 @@ function renderSentenceNextWordInParams(result) {
   inlineParamResult.style.display = "";
 }
 
+
 async function openLatestFfnHistory() {
   const studyWindow = window.open("", "_blank");
   setStatus("Loading History");
@@ -656,6 +667,7 @@ function renderArtifactsIntoDoc(doc, container, artifacts) {
 
 function renderHeatmapIntoDoc(doc, container, heatmap) {
   container.innerHTML = "<h3>Hidden State</h3>";
+  const heatmapSyncGroup = { wraps: [], syncing: false };
   const hasMatrix = Boolean(Array.isArray(heatmap && heatmap.matrix) && heatmap.matrix.length > 0);
   const hasHeatmaps = Boolean(Array.isArray(heatmap && heatmap.heatmaps) && heatmap.heatmaps.length > 0);
   const hasTasks = Boolean(Array.isArray(heatmap && heatmap.ui_tasks) && heatmap.ui_tasks.length > 0);
@@ -709,7 +721,7 @@ function renderHeatmapIntoDoc(doc, container, heatmap) {
           // 2) value_key -> [{title,matrix}, ...]
           // 3) fallback to heatmap.heatmaps / heatmap.matrix
           if (Array.isArray(value) && value.length > 0 && Array.isArray(value[0]) && Array.isArray(value[0][0]) === false) {
-            renderOneHeatmapIntoDoc(doc, container, value, "Hidden State Heatmap");
+            renderOneHeatmapIntoDoc(doc, container, value, "Hidden State Heatmap", heatmapSyncGroup);
             return;
           }
           if (Array.isArray(value) && value.length > 0 && value[0] && typeof value[0] === "object" && Array.isArray(value[0].matrix)) {
@@ -719,6 +731,7 @@ function renderHeatmapIntoDoc(doc, container, heatmap) {
                 container,
                 hm.matrix,
                 String(hm.title || `Heatmap ${idx + 1}`),
+                heatmapSyncGroup,
               );
             });
             return;
@@ -732,6 +745,7 @@ function renderHeatmapIntoDoc(doc, container, heatmap) {
               container,
               hm && Array.isArray(hm.matrix) ? hm.matrix : [],
               String((hm && hm.title) || `Heatmap ${idx + 1}`),
+              heatmapSyncGroup,
             );
           });
           return;
@@ -788,13 +802,14 @@ function renderHeatmapIntoDoc(doc, container, heatmap) {
       container,
       hm && Array.isArray(hm.matrix) ? hm.matrix : [],
       String((hm && hm.title) || `Heatmap ${hmIdx + 1}`),
+      heatmapSyncGroup,
     );
   });
   renderTopLogitsTableIntoDoc(doc, container, heatmap.top_logits || [], heatmap, "Top 15 Logits (with cosine similarity)", "logits_source", "logits_error");
   renderTopLogitsTableIntoDoc(doc, container, heatmap.top_logits_top100 || [], heatmap, "Top 15 Logits (Penultimate Top-100 Intervention)", "top_logits_top100_source", "top_logits_top100_error");
 }
 
-function renderOneHeatmapIntoDoc(doc, container, matrix, titleText) {
+function renderOneHeatmapIntoDoc(doc, container, matrix, titleText, syncGroup) {
   const rows = Number(Array.isArray(matrix) ? matrix.length : 0);
   const cols = Number(rows > 0 && Array.isArray(matrix[0]) ? matrix[0].length : 0);
   if (!rows || !cols) return;
@@ -834,6 +849,25 @@ function renderOneHeatmapIntoDoc(doc, container, matrix, titleText) {
   canvas.style.cursor = "crosshair";
   wrap.appendChild(canvas);
   container.appendChild(wrap);
+
+  if (syncGroup && Array.isArray(syncGroup.wraps)) {
+    syncGroup.wraps.push(wrap);
+    wrap.addEventListener("scroll", () => {
+      if (syncGroup.syncing) return;
+      syncGroup.syncing = true;
+      try {
+        const left = wrap.scrollLeft;
+        const top = wrap.scrollTop;
+        syncGroup.wraps.forEach((other) => {
+          if (!other || other === wrap) return;
+          other.scrollLeft = left;
+          other.scrollTop = top;
+        });
+      } finally {
+        syncGroup.syncing = false;
+      }
+    });
+  }
   const ctx = canvas.getContext("2d");
   if (!ctx) return;
 
@@ -964,34 +998,6 @@ function renderNeuronLogitsTableIntoDoc(doc, container, rows, payload) {
     return;
   }
 
-  const filterControls = doc.createElement("div");
-  filterControls.className = "muted";
-  const thresholdLabel = doc.createElement("span");
-  thresholdLabel.textContent = "Top1 Logit Threshold ";
-  const thresholdInput = doc.createElement("input");
-  thresholdInput.type = "number";
-  thresholdInput.step = "0.001";
-  thresholdInput.value = String(threshold);
-  thresholdInput.style.width = "100px";
-  const thresholdHint = doc.createElement("span");
-  thresholdHint.style.marginLeft = "8px";
-  filterControls.appendChild(thresholdLabel);
-  filterControls.appendChild(thresholdInput);
-  filterControls.appendChild(thresholdHint);
-  const grammarWrap = doc.createElement("span");
-  grammarWrap.style.marginLeft = "16px";
-  const grammarFilterInput = doc.createElement("input");
-  grammarFilterInput.type = "checkbox";
-  grammarFilterInput.id = `grammar_filter_${Date.now()}`;
-  const grammarFilterLabel = doc.createElement("label");
-  grammarFilterLabel.htmlFor = grammarFilterInput.id;
-  grammarFilterLabel.style.marginLeft = "4px";
-  grammarFilterLabel.textContent = "Grammar Token Filter";
-  grammarWrap.appendChild(grammarFilterInput);
-  grammarWrap.appendChild(grammarFilterLabel);
-  filterControls.appendChild(grammarWrap);
-  container.appendChild(filterControls);
-
   function rowPassesThreshold(row) {
     const top = Array.isArray(row && row.top_logits) ? row.top_logits : [];
     if (!top.length) return false;
@@ -999,18 +1005,9 @@ function renderNeuronLogitsTableIntoDoc(doc, container, rows, payload) {
     return Number.isFinite(v) && v >= threshold;
   }
 
-  function rowPassesGrammarFilter(row) {
-    if (!grammarFilterInput.checked) return true;
-    const top = Array.isArray(row && row.top_logits) ? row.top_logits : [];
-    if (top.length < 2) return true;
-    const firstTwoAllGrammar = isGrammarTokenLike(top[0]) && isGrammarTokenLike(top[1]);
-    // Filter out rows whose top-2 are both grammar tokens.
-    return !firstTwoAllGrammar;
-  }
-
   function buildTableForRows(tableRows) {
     const safeRows = Array.isArray(tableRows) ? tableRows : [];
-    const filteredRowsNow = safeRows.filter((r) => rowPassesThreshold(r) && rowPassesGrammarFilter(r));
+    const filteredRowsNow = safeRows.filter((r) => rowPassesThreshold(r));
     const effectiveTopK = Number.isFinite(topK) && topK > 0
       ? Math.floor(topK)
       : Math.max(...filteredRowsNow.map((r) => Array.isArray(r && r.top_logits) ? r.top_logits.length : 0), 0);
@@ -1075,92 +1072,26 @@ function renderNeuronLogitsTableIntoDoc(doc, container, rows, payload) {
     }
     table.appendChild(tbody);
     wrap.appendChild(table);
-    thresholdHint.textContent = `showing ${filteredRowsNow.length}/${safeRows.length} rows in this view`;
     return wrap;
   }
 
-  function updateMetaForThreshold(totalRows, keptRows) {
-    meta.textContent = `layer=${Number.isFinite(layer) ? layer : "-"}, activation=${Number.isFinite(activation) ? activation : "-"}, threshold=${threshold.toFixed(3)}, top_k=${Number.isFinite(topK) ? topK : "-"}, hidden_dim=${Number.isFinite(hiddenDim) ? hiddenDim : "-"}, returned=${Number.isFinite(totalRows) ? totalRows : "-"}, filtered=${Math.max(0, totalRows - keptRows)}`;
-  }
-
   if (isBatched) {
-    const hint = doc.createElement("div");
-    hint.className = "muted";
-    hint.textContent = "Batched lazy render: expand one batch to load its table.";
-    container.appendChild(hint);
     const batchHost = doc.createElement("div");
     container.appendChild(batchHost);
-    function renderBatches() {
-      batchHost.innerHTML = "";
-      let keptTotal = 0;
-      let totalRows = 0;
-      rows.forEach((batch, idx) => {
-        const batchRows = Array.isArray(batch && batch.rows) ? batch.rows : [];
-        const keptInBatch = batchRows.filter((r) => rowPassesThreshold(r)).length;
-        keptTotal += keptInBatch;
-        totalRows += batchRows.length;
-        const details = doc.createElement("details");
-        const summary = doc.createElement("summary");
-        const startId = Number(batch && batch.start_neuron_id);
-        const endId = Number(batch && batch.end_neuron_id);
-        summary.textContent = `Batch ${idx}: neuron ${Number.isFinite(startId) ? startId : "-"} - ${Number.isFinite(endId) ? endId : "-"} (${keptInBatch}/${batchRows.length})`;
-        details.appendChild(summary);
-        const placeholder = doc.createElement("div");
-        placeholder.className = "muted";
-        placeholder.textContent = "Expand to render table...";
-        details.appendChild(placeholder);
-        let rendered = false;
-        const ensureRendered = () => {
-          if (!details.open || rendered) return;
-          try {
-            placeholder.remove();
-            details.appendChild(buildTableForRows(batchRows));
-            rendered = true;
-          } catch (err) {
-            const e = doc.createElement("div");
-            e.className = "error";
-            e.textContent = `Batch render failed: ${String(err && err.message ? err.message : err)}`;
-            details.appendChild(e);
-          }
-        };
-        details.addEventListener("toggle", ensureRendered);
-        // Some browser/page-refresh states miss `toggle`; keep a click fallback.
-        summary.addEventListener("click", () => {
-          setTimeout(ensureRendered, 0);
-        });
-        batchHost.appendChild(details);
-      });
-      updateMetaForThreshold(totalRows, keptTotal);
-    }
-    thresholdInput.addEventListener("input", () => {
-      const next = Number(thresholdInput.value);
-      threshold = Number.isFinite(next) ? next : 15.0;
-      renderBatches();
+    rows.forEach((batch, idx) => {
+      const batchRows = Array.isArray(batch && batch.rows) ? batch.rows : [];
+      const startId = Number(batch && batch.start_neuron_id);
+      const endId = Number(batch && batch.end_neuron_id);
+      const head = doc.createElement("div");
+      head.className = "muted";
+      head.textContent = `Batch ${idx}: neuron ${Number.isFinite(startId) ? startId : "-"} - ${Number.isFinite(endId) ? endId : "-"}, rows=${batchRows.length}`;
+      batchHost.appendChild(head);
+      batchHost.appendChild(buildTableForRows(batchRows));
     });
-    grammarFilterInput.addEventListener("change", () => {
-      renderBatches();
-    });
-    renderBatches();
     return;
   }
 
-  const singleHost = doc.createElement("div");
-  container.appendChild(singleHost);
-  function renderSingle() {
-    singleHost.innerHTML = "";
-    singleHost.appendChild(buildTableForRows(rows));
-    const kept = rows.filter((r) => rowPassesThreshold(r)).length;
-    updateMetaForThreshold(rows.length, kept);
-  }
-  thresholdInput.addEventListener("input", () => {
-    const next = Number(thresholdInput.value);
-    threshold = Number.isFinite(next) ? next : 15.0;
-    renderSingle();
-  });
-  grammarFilterInput.addEventListener("change", () => {
-    renderSingle();
-  });
-  renderSingle();
+  container.appendChild(buildTableForRows(rows));
 }
 
 function renderResult(result) {
@@ -1549,6 +1480,33 @@ async function sendChatMessage() {
   if (!text) return;
   const temp = Number(chatTemperature.value);
   const maxTokens = Number(chatMaxTokens.value);
+  const includeAssistantMarker = Boolean(chatIncludeAssistantMarker && chatIncludeAssistantMarker.checked);
+  const neuronEnabled = Boolean(chatLayerNeuronEnabled && chatLayerNeuronEnabled.checked);
+  const neuronLayer = Number(chatLayerNeuronLayer && chatLayerNeuronLayer.value);
+  const neuronId = Number(chatLayerNeuronId && chatLayerNeuronId.value);
+  const neuronValue = Number(chatLayerNeuronValue && chatLayerNeuronValue.value);
+  const neuronToken = String((chatLayerNeuronToken && chatLayerNeuronToken.value) || "").trim();
+  const ffnEnabled = Boolean(chatFfnNeuronEnabled && chatFfnNeuronEnabled.checked);
+  const ffnLayer = Number(chatFfnNeuronLayer && chatFfnNeuronLayer.value);
+  const ffnNeuronId = Number(chatFfnNeuronId && chatFfnNeuronId.value);
+  const ffnNeuronValue = Number(chatFfnNeuronValue && chatFfnNeuronValue.value);
+  const layerNeuronChange = neuronEnabled
+    ? {
+        enabled: true,
+        layer: Number.isFinite(neuronLayer) ? Math.trunc(neuronLayer) : 0,
+        neuron: Number.isFinite(neuronId) ? Math.trunc(neuronId) : 0,
+        value: Number.isFinite(neuronValue) ? neuronValue : 0,
+        token: neuronToken,
+      }
+    : { enabled: false };
+  const ffnNeuronChange = ffnEnabled
+    ? {
+        enabled: true,
+        layer: Number.isFinite(ffnLayer) ? Math.trunc(ffnLayer) : 0,
+        neuron: Number.isFinite(ffnNeuronId) ? Math.trunc(ffnNeuronId) : 0,
+        value: Number.isFinite(ffnNeuronValue) ? ffnNeuronValue : 0,
+      }
+    : { enabled: false };
 
   chatMessages.push({ role: "user", content: text });
   renderChatTranscript();
@@ -1565,6 +1523,9 @@ async function sendChatMessage() {
         temperature: Number.isFinite(temp) ? temp : 0.7,
         max_new_tokens: Number.isFinite(maxTokens) ? maxTokens : 128,
         top_p: 0.9,
+        include_assistant_marker: includeAssistantMarker,
+        layer_neuron_change: layerNeuronChange,
+        ffn_neuron_change: ffnNeuronChange,
       }),
     });
     const payload = await response.json();
@@ -1579,6 +1540,21 @@ async function sendChatMessage() {
       content: assistantText || "[empty response]",
     });
     renderChatTranscript();
+    const lnc = payload.layer_neuron_change || { enabled: false };
+    if (lnc.enabled) {
+      appendChatMeta(
+        `Layer neuron change active: layer=${lnc.layer}, neuron=${lnc.neuron}, value=${Number(lnc.value).toFixed(4)}, token=${String(lnc.token || "")}, applied_count=${Number(lnc.applied_count || 0)}`,
+      );
+    }
+    const fnc = payload.ffn_neuron_change || { enabled: false };
+    if (fnc.enabled) {
+      appendChatMeta(
+        `FFN neuron change active: layer=${fnc.layer}, neuron=${fnc.neuron}, value=${Number(fnc.value).toFixed(4)}`,
+      );
+    }
+    if (payload.prompt_mode) {
+      appendChatMeta(`Prompt mode: ${String(payload.prompt_mode)}`);
+    }
   } catch (error) {
     appendChatMeta(`Error: ${error.message}`);
   } finally {
@@ -1586,6 +1562,18 @@ async function sendChatMessage() {
     setStatus("Ready");
     chatInput.focus();
   }
+}
+
+function updateChatNeuronControls() {
+  const enabled = Boolean(chatLayerNeuronEnabled && chatLayerNeuronEnabled.checked);
+  if (chatLayerNeuronLayer) chatLayerNeuronLayer.disabled = !enabled;
+  if (chatLayerNeuronId) chatLayerNeuronId.disabled = !enabled;
+  if (chatLayerNeuronValue) chatLayerNeuronValue.disabled = !enabled;
+  if (chatLayerNeuronToken) chatLayerNeuronToken.disabled = !enabled;
+  const ffnEnabled = Boolean(chatFfnNeuronEnabled && chatFfnNeuronEnabled.checked);
+  if (chatFfnNeuronLayer) chatFfnNeuronLayer.disabled = !ffnEnabled;
+  if (chatFfnNeuronId) chatFfnNeuronId.disabled = !ffnEnabled;
+  if (chatFfnNeuronValue) chatFfnNeuronValue.disabled = !ffnEnabled;
 }
 
 function clearChat() {
@@ -1630,9 +1618,16 @@ chatInput.addEventListener("keydown", (event) => {
     sendChatMessage();
   }
 });
+if (chatLayerNeuronEnabled) {
+  chatLayerNeuronEnabled.addEventListener("change", updateChatNeuronControls);
+}
+if (chatFfnNeuronEnabled) {
+  chatFfnNeuronEnabled.addEventListener("change", updateChatNeuronControls);
+}
 
 loadActions().catch((error) => {
   setStatus("Error");
   resultSummary.innerHTML = `<span class="error">${escapeHtml(error.message)}</span>`;
 });
 initChat();
+updateChatNeuronControls();

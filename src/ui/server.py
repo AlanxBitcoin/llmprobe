@@ -168,6 +168,9 @@ def _run_fastapi_server(project_root: Path, config_path: Path, *, host: str, por
             max_new_tokens=int(payload.get("max_new_tokens") or 128),
             temperature=float(payload.get("temperature") or 0.7),
             top_p=float(payload.get("top_p") or 0.9),
+            include_assistant_marker=bool(payload.get("include_assistant_marker", True)),
+            layer_neuron_change=payload.get("layer_neuron_change"),
+            ffn_neuron_change=payload.get("ffn_neuron_change"),
         )
         if result.get("status") == "ok":
             status = 200
@@ -302,6 +305,9 @@ def _make_handler(project_root: Path, config_path: Path) -> type[BaseHTTPRequest
                         max_new_tokens=int(payload.get("max_new_tokens") or 128),
                         temperature=float(payload.get("temperature") or 0.7),
                         top_p=float(payload.get("top_p") or 0.9),
+                        include_assistant_marker=bool(payload.get("include_assistant_marker", True)),
+                        layer_neuron_change=payload.get("layer_neuron_change"),
+                        ffn_neuron_change=payload.get("ffn_neuron_change"),
                     )
                 else:
                     action_id = str(payload.get("action_id") or "")

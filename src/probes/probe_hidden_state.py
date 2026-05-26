@@ -192,3 +192,4 @@ def fetch_sentence_last_token_hidden_state(
             "all_token_hidden_by_layer": [],
             "last_token_attention_by_layer": [],
         }
+
