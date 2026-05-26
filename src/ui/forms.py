@@ -34,6 +34,9 @@ FORM_SCHEMAS: dict[str, list[dict[str, Any]]] = {
         {"name": "include_bos", "label": "Include BOS", "type": "checkbox", "default": True},
         {"name": "include_assistant", "label": "Include Assistant", "type": "checkbox", "default": False},
     ],
+    "sentence_next_word_form": [
+        {"name": "sentence", "label": "Sentence", "type": "text", "default": "The apple is red.", "required": True},
+    ],
     "single_word_top_100_neurons_form": [
         {"name": "word", "label": "Word", "type": "text", "default": "apple", "required": True},
         {"name": "top_k_neurons", "label": "Top K Neurons", "type": "number", "default": 100, "min": 1},
@@ -43,7 +46,7 @@ FORM_SCHEMAS: dict[str, list[dict[str, Any]]] = {
         {"name": "intervention_layer", "label": "Layer", "type": "number", "default": 30, "min": 1, "step": 1},
         {"name": "activation_value", "label": "Activation Value", "type": "number", "default": 10.0},
         {"name": "use_prefix_context", "label": "Use Prefix Context", "type": "checkbox", "default": False},
-        {"name": "prefix_text", "label": "Prefix Words/Text", "type": "text", "default": "apple", "required": False},
+        {"name": "prefix_text", "label": "Prefix Sentence", "type": "text", "default": "The apple is red.", "required": False},
         {"name": "return_batch_size", "label": "Return Batch Size", "type": "number", "default": 1000, "min": 1},
     ],
     "layer_ffn_neuron_logits_table_form": [

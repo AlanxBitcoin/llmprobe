@@ -50,6 +50,14 @@ UI_ACTIONS: dict[str, UIAction] = {
         command="run-single-word-hidden-state-batch-average",
         form_schema="single_word_hidden_state_batch_average_form",
     ),
+    "study_sentence_next_word": UIAction(
+        id="study_sentence_next_word",
+        label="Sentence Next Word",
+        description="Input one sentence and show top15 next-token logits.",
+        kind="study",
+        command="run-sentence-next-word",
+        form_schema="sentence_next_word_form",
+    ),
     "study_single_word_top_100_neurons": UIAction(
         id="study_single_word_top_100_neurons",
         label="Single Word Top 100 Neurons",
@@ -165,6 +173,8 @@ def build_command_args(action: UIAction, params: dict[str, Any]) -> list[str]:
             "--include-assistant",
             "true" if include_assistant_flag else "false",
         ]
+    if action.command == "run-sentence-next-word":
+        return [action.command, str(params.get("sentence") or "The apple is red.")]
     if action.command == "run-single-word-top-100-neurons":
         top_k_neurons = params.get("top_k_neurons")
         intervention_layer = params.get("intervention_layer")
@@ -181,7 +191,7 @@ def build_command_args(action: UIAction, params: dict[str, Any]) -> list[str]:
         activation_value = params.get("activation_value")
         use_prefix_context = params.get("use_prefix_context")
         use_prefix_context_flag = bool(use_prefix_context) if use_prefix_context is not None else False
-        prefix_text = str(params.get("prefix_text") or "")
+        prefix_text = str(params.get("prefix_text") or "The apple is red.")
         return_batch_size = params.get("return_batch_size")
         return [
             action.command,

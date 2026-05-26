@@ -465,6 +465,7 @@ def execute_ui_action(
         if action.command in {
             "run-single-word-hidden-state",
             "run-single-word-hidden-state-batch-average",
+            "run-sentence-next-word",
             "run-single-word-top-100-neurons",
             "run-layer-ffn-neuron-logits-table",
         }:
@@ -579,6 +580,7 @@ def start_ui_action_task(
             if action.command in {
                 "run-single-word-hidden-state",
                 "run-single-word-hidden-state-batch-average",
+                "run-sentence-next-word",
                 "run-single-word-top-100-neurons",
                 "run-layer-neuron-logits-table",
                 "run-layer-ffn-neuron-logits-table",

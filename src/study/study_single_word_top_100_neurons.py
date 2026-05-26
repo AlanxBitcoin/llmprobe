@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 # Study: Single Word Top 100 Neurons (Penultimate Intervention)
-# 1) Fetch full hidden-state heatmap for one single-token word (store-first).
+# 1) Fetch full hidden-state heatmap for one word input (store-first).
 # 2) Compute baseline top-15 logits from the original last-layer vector.
 # 3) Take penultimate-layer vector, keep abs top-100 neurons, zero others.
 # 4) Inject that sparse vector into penultimate layer (last token) via hook.
@@ -13,7 +13,7 @@ from typing import Any
 
 from ..config import load_config
 from ..probes.probe_layer_neuron import rank_logits_after_penultimate_topk_intervention
-from ..probes.probe_single_word_hidden_state import (
+from ..probes.probe_hidden_state import (
     fetch_single_word_hidden_state,
     rank_last_layer_logits_from_heatmap,
 )

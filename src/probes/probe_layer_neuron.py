@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 import torch
+import torch.nn.functional as F
 
 from ..runtime_api import get_runtime_api, start_llama_api
 from ..utils.hooks import starting_from_middle_layer
@@ -67,7 +68,32 @@ def run_starting_from_middle_layer_probe(
             input_ids = _build_protocol_input_ids_from_word(tokenizer, word=str(word).strip(), protocol=protocol)
             input_tensor = torch.tensor([input_ids], dtype=torch.long, device=device)
 
-        if (
+        hidden_dim_cfg = int(getattr(getattr(model, "config", None), "hidden_size", 0) or 0)
+        if hidden_dim_cfg <= 0:
+            lm_head = getattr(model, "lm_head", None)
+            hidden_dim_cfg = int(getattr(lm_head, "in_features", 0) or 0)
+        if hidden_dim_cfg <= 0:
+            return None, "Unable to infer hidden size from model"
+
+        # Fast path A: caller already provides full [B,S,H] start-layer hidden states.
+        # This avoids repeated reference forward passes for each batch.
+        if int(hidden_state.ndim) == 3:
+            replacement = hidden_state.to(device=device, dtype=next(model.parameters()).dtype)
+            if int(replacement.shape[-1]) != hidden_dim_cfg:
+                return None, f"Hidden size mismatch: expected {hidden_dim_cfg}, got {int(replacement.shape[-1])}"
+            batch_size = int(input_tensor.shape[0])
+            seq_len = int(input_tensor.shape[1])
+            rep_b = int(replacement.shape[0])
+            rep_s = int(replacement.shape[1])
+            if rep_b == 1 and batch_size > 1:
+                replacement = replacement.expand(batch_size, rep_s, hidden_dim_cfg)
+                rep_b = batch_size
+            if rep_b != batch_size:
+                return None, f"Hidden batch mismatch: expected 1 or {batch_size}, got {rep_b}"
+            if rep_s != seq_len:
+                return None, f"Hidden seq mismatch: expected {seq_len}, got {rep_s}"
+            start_hidden_full = replacement
+        elif (
             int(input_tensor.shape[0]) == 1
             and int(input_tensor.shape[1]) == 1
             and int(hidden_state.ndim) == 1
@@ -232,19 +258,92 @@ def run_layer_neuron_batch_to_logits_probe(
         final_batch = hidden_states[-1].detach()
         tokenizer = bundle.tokenizer
         model = bundle.model
-        bsz = int(final_batch.shape[0])
-        all_rows: list[list[dict[str, Any]]] = []
-        for i in range(bsz):
-            final_vec = final_batch[i, -1, :]
-            rows = rank_vector_logits_and_cosine(
-                model=model,
-                vector=final_vec,
-                tokenizer=tokenizer,
-                top_k=int(top_k),
-                apply_final_norm=False,
-                include_cosine=bool(include_cosine),
-            )
-            all_rows.append(rows)
-        return all_rows, None
+        last_hidden = final_batch[:, -1, :]
+        rows = _rank_hidden_batch_logits_and_cosine(
+            model=model,
+            tokenizer=tokenizer,
+            hidden_batch=last_hidden,
+            top_k=int(top_k),
+            apply_final_norm=False,
+            include_cosine=bool(include_cosine),
+        )
+        return rows, None
     except Exception as exc:  # noqa: BLE001
         return None, str(exc)
+
+
+def _rank_hidden_batch_logits_and_cosine(
+    *,
+    model,
+    tokenizer,
+    hidden_batch: torch.Tensor,
+    top_k: int,
+    apply_final_norm: bool,
+    include_cosine: bool,
+) -> list[list[dict[str, Any]]]:
+    lm_head = getattr(model, "lm_head", None)
+    if lm_head is None:
+        return []
+    if hidden_batch.ndim != 2:
+        raise ValueError(f"hidden_batch must be 2D [B,H], got shape={tuple(hidden_batch.shape)}")
+
+    hidden_for_logits = hidden_batch.to(dtype=lm_head.weight.dtype)
+    if apply_final_norm:
+        base_model = getattr(model, "model", None)
+        final_norm = getattr(base_model, "norm", None)
+        if final_norm is not None:
+            hidden_for_logits = final_norm(hidden_for_logits)
+
+    with torch.no_grad():
+        cfg = getattr(model, "config", None)
+        pretraining_tp = int(getattr(cfg, "pretraining_tp", 1) or 1)
+        if pretraining_tp > 1:
+            vocab_size = int(getattr(cfg, "vocab_size", lm_head.weight.shape[0]))
+            lm_head_slices = lm_head.weight.split(vocab_size // pretraining_tp, dim=0)
+            logits_chunks = [F.linear(hidden_for_logits, lm_head_slice) for lm_head_slice in lm_head_slices]
+            logits = torch.cat(logits_chunks, dim=-1).to(dtype=torch.float32)
+        else:
+            logits = lm_head(hidden_for_logits).to(dtype=torch.float32)
+        vocab_k = min(int(top_k), int(logits.shape[-1]))
+        top_vals, top_ids = torch.topk(logits, k=vocab_k, dim=-1)
+
+    top_ids_cpu = top_ids.detach().cpu().tolist()
+    top_vals_cpu = top_vals.detach().cpu().tolist()
+    flat_ids = [int(tok_id) for row in top_ids_cpu for tok_id in row]
+    if tokenizer is not None and flat_ids:
+        flat_tokens = tokenizer.convert_ids_to_tokens(flat_ids)
+        flat_texts = [tokenizer.decode([int(tok_id)], clean_up_tokenization_spaces=False) for tok_id in flat_ids]
+    else:
+        flat_tokens = ["" for _ in flat_ids]
+        flat_texts = ["" for _ in flat_ids]
+
+    cosine_map: list[list[float]] | None = None
+    if bool(include_cosine) and flat_ids:
+        with torch.no_grad():
+            hidden_norm = F.normalize(hidden_batch.to(dtype=torch.float32), dim=1)
+            target = lm_head.weight[top_ids].to(dtype=torch.float32)
+            target_norm = F.normalize(target, dim=2)
+            cosine = torch.sum(target_norm * hidden_norm.unsqueeze(1), dim=2)
+        cosine_map = cosine.detach().cpu().tolist()
+
+    out: list[list[dict[str, Any]]] = []
+    cursor = 0
+    batch_size = int(len(top_ids_cpu))
+    for b in range(batch_size):
+        row_ids = top_ids_cpu[b]
+        row_vals = top_vals_cpu[b]
+        row: list[dict[str, Any]] = []
+        for i, tok_id in enumerate(row_ids, start=1):
+            entry: dict[str, Any] = {
+                "rank": int(i),
+                "token_id": int(tok_id),
+                "token": str(flat_tokens[cursor]),
+                "text": str(flat_texts[cursor]),
+                "logit": float(row_vals[i - 1]),
+            }
+            if cosine_map is not None:
+                entry["cosine_similarity"] = float(cosine_map[b][i - 1])
+            row.append(entry)
+            cursor += 1
+        out.append(row)
+    return out

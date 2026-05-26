@@ -10,6 +10,14 @@ const actionTitle = document.getElementById("actionTitle");
 const actionDescription = document.getElementById("actionDescription");
 const runButton = document.getElementById("runButton");
 const commandPreview = document.getElementById("commandPreview");
+const inlineParamResult = document.createElement("div");
+inlineParamResult.id = "inlineParamResult";
+inlineParamResult.className = "command-preview";
+inlineParamResult.style.marginTop = "8px";
+inlineParamResult.style.display = "none";
+inlineParamResult.style.maxHeight = "none";
+inlineParamResult.style.overflow = "visible";
+commandPreview.insertAdjacentElement("afterend", inlineParamResult);
 const serverStatus = document.getElementById("serverStatus");
 const resultSummary = document.getElementById("resultSummary");
 const csvContainer = document.getElementById("csvContainer");
@@ -143,6 +151,7 @@ function selectAction(actionId) {
     loadFfnHistoryList();
   }
   updateCommandPreview();
+  clearInlineParamResult();
 }
 
 function renderForm(fields) {
@@ -359,7 +368,9 @@ async function updateBatchNameDropdown() {
 async function runSelectedAction() {
   if (!selectedAction) return;
   const params = collectParams();
-  const studyWindow = window.open("", "_blank");
+  const inlineOnly = selectedAction.id === "study_sentence_next_word";
+  clearInlineParamResult();
+  const studyWindow = inlineOnly ? null : window.open("", "_blank");
   setStatus("Running");
   runButton.disabled = true;
   resultSummary.textContent = "Running study. Large model calls can take a while.";
@@ -378,9 +389,15 @@ async function runSelectedAction() {
       await streamTaskUntilDone(lastResult.task_id, studyWindow);
       return;
     }
-    renderResultInWindow(studyWindow, lastResult);
+    if (inlineOnly) {
+      renderResult(lastResult);
+    } else {
+      renderResultInWindow(studyWindow, lastResult);
+    }
     if (lastResult && lastResult.status === "ok") {
-      resultSummary.textContent = "Study finished. Results are shown in the popup window.";
+      resultSummary.textContent = inlineOnly
+        ? "Study finished. Results are shown below."
+        : "Study finished. Results are shown in the popup window.";
     } else if (lastResult && lastResult.status === "busy") {
       resultSummary.textContent = "Study is busy. Please wait and retry.";
     } else {
@@ -396,6 +413,50 @@ async function runSelectedAction() {
     runButton.disabled = false;
     setStatus("Ready");
   }
+}
+
+function clearInlineParamResult() {
+  inlineParamResult.innerHTML = "";
+  inlineParamResult.style.display = "none";
+}
+
+function renderSentenceNextWordInParams(result) {
+  if (!selectedAction || selectedAction.id !== "study_sentence_next_word") return;
+  const heatmap = result && result.hidden_state_heatmap ? result.hidden_state_heatmap : {};
+  const rows = Array.isArray(heatmap.top_logits) ? heatmap.top_logits : [];
+  const sentence = String(heatmap.sentence || "");
+  const source = String(heatmap.logits_source || "unknown");
+  const err = heatmap.logits_error ? String(heatmap.logits_error) : "";
+
+  const parts = [];
+  parts.push(`<div><strong>Sentence Next Word Result</strong></div>`);
+  if (sentence) parts.push(`<div>sentence=${escapeHtml(sentence)}</div>`);
+  parts.push(`<div>logits_source=${escapeHtml(source)}${err ? `, error=${escapeHtml(err)}` : ""}</div>`);
+  if (!rows.length) {
+    parts.push(`<div>No logits rows returned.</div>`);
+    inlineParamResult.innerHTML = parts.join("");
+    inlineParamResult.style.display = "";
+    return;
+  }
+
+  const tableRows = rows.map((row) => {
+    const rank = Number(row.rank || 0);
+    const tokenId = Number(row.token_id || 0);
+    const text = escapeHtml(String(row.text ?? ""));
+    const logit = Number(row.logit || 0);
+    return `<tr><td>${rank}</td><td>${tokenId}</td><td>${text}</td><td>${logit.toFixed(6)}</td></tr>`;
+  }).join("");
+
+  parts.push(
+    `<div style="margin-top:6px;">` +
+      `<table style="width:100%;border-collapse:collapse;">` +
+        `<thead><tr><th style="text-align:left;">rank</th><th style="text-align:left;">token_id</th><th style="text-align:left;">text</th><th style="text-align:left;">logit</th></tr></thead>` +
+        `<tbody>${tableRows}</tbody>` +
+      `</table>` +
+    `</div>`,
+  );
+  inlineParamResult.innerHTML = parts.join("");
+  inlineParamResult.style.display = "";
 }
 
 async function openLatestFfnHistory() {
@@ -444,7 +505,11 @@ async function pollTaskUntilDone(taskId, studyWindow) {
       continue;
     }
     lastResult = payload;
-    renderResultInWindow(studyWindow, payload);
+    if (studyWindow) {
+      renderResultInWindow(studyWindow, payload);
+    } else {
+      renderResult(payload);
+    }
     if (payload.status === "ok") {
       resultSummary.textContent = "Study finished. Results are shown in the popup window.";
     } else {
@@ -483,7 +548,11 @@ function streamTaskUntilDone(taskId, studyWindow) {
         return;
       }
       lastResult = payload;
-      renderResultInWindow(studyWindow, payload);
+      if (studyWindow) {
+        renderResultInWindow(studyWindow, payload);
+      } else {
+        renderResult(payload);
+      }
       if (payload.status === "ok") {
         resultSummary.textContent = "Study finished. Results are shown in the popup window.";
       } else {
@@ -595,13 +664,9 @@ function renderHeatmapIntoDoc(doc, container, heatmap) {
     msg.className = "error";
     if (heatmap && heatmap.ok === false) {
       const reason = String(heatmap.reason || "unknown");
-      if (reason === "single_token_required") {
-        const word = String(heatmap.offending_word || heatmap.word || "");
-        const tokenCount = Number(heatmap.token_count || 0);
-        msg.textContent = `Invalid input: word "${word}" maps to ${tokenCount} tokens (single token required).`;
-      } else {
-        msg.textContent = `Heatmap failed: ${reason}`;
-      }
+      const tokenCount = Number(heatmap.token_count || 0);
+      const tokenNote = Number.isFinite(tokenCount) && tokenCount > 0 ? ` (token_count=${tokenCount})` : "";
+      msg.textContent = `Heatmap failed: ${reason}${tokenNote}`;
     } else {
       msg.textContent = "No heatmap result.";
     }
@@ -1133,6 +1198,7 @@ function renderResult(result) {
   }
   renderCsv(result.csv_preview);
   renderHiddenStateHeatmap(result.hidden_state_heatmap);
+  renderSentenceNextWordInParams(result);
   renderArtifacts(result.artifacts || []);
   const hasCsv = !!(result.csv_preview && result.csv_preview.rows && result.csv_preview.rows.length);
   showCsvButton.disabled = !hasCsv;
@@ -1145,7 +1211,10 @@ function renderHiddenStateHeatmap(heatmap) {
   if (heatmap && heatmap.ok === false) {
     const msg = document.createElement("div");
     msg.className = "error";
-    msg.textContent = `Hidden-state heatmap requires a single-token word. token_count=${Number(heatmap.token_count || 0)}`;
+    const reason = String(heatmap.reason || "unknown");
+    const tokenCount = Number(heatmap.token_count || 0);
+    const tokenNote = Number.isFinite(tokenCount) && tokenCount > 0 ? ` (token_count=${tokenCount})` : "";
+    msg.textContent = `Hidden-state heatmap failed: ${reason}${tokenNote}`;
     hiddenStateContainer.appendChild(msg);
     renderTopLogitsTable(
       heatmap.top_logits || [],
@@ -1164,6 +1233,20 @@ function renderHiddenStateHeatmap(heatmap) {
     return;
   }
   if (!heatmap || !Array.isArray(heatmap.matrix) || heatmap.matrix.length === 0) {
+    renderTopLogitsTable(
+      (heatmap && heatmap.top_logits) || [],
+      heatmap || {},
+      "Top 15 Logits (with cosine similarity)",
+      "logits_source",
+      "logits_error",
+    );
+    renderTopLogitsTable(
+      (heatmap && heatmap.top_logits_top100) || [],
+      heatmap || {},
+      "Top 15 Logits (Penultimate Top-100 Intervention)",
+      "top_logits_top100_source",
+      "top_logits_top100_error",
+    );
     return;
   }
   const rows = Number(heatmap.rows || heatmap.matrix.length);

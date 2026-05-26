@@ -10,7 +10,6 @@ import argparse
 import os
 import sys
 import threading
-import time
 from pathlib import Path
 from typing import Any
 import torch
@@ -53,6 +52,7 @@ from src.study import (
     run_layer_ffn_neuron_logits_table_study,
     run_layer_neuron_logits_table_study,
     run_linear_probe_study,
+    run_sentence_next_word_study,
     run_single_word_hidden_state_study,
     run_single_word_hidden_state_batch_average_study,
     run_single_word_top_100_neurons_study,
@@ -152,6 +152,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Whether to include assistant chat-prefix context (true/false; requires include-bos=true)",
     )
 
+    sentence_next = subparsers.add_parser(
+        "run-sentence-next-word",
+        help="Given one sentence, return top-15 logits for the next token.",
+    )
+    sentence_next.add_argument("sentence", help="Sentence text")
+
     top100 = subparsers.add_parser(
         "run-single-word-top-100-neurons",
         help="Single-word study: heatmap + baseline top15 logits + penultimate-top100 intervention top15 logits",
@@ -175,8 +181,8 @@ def build_parser() -> argparse.ArgumentParser:
     neuron_scan.add_argument(
         "--prefix-text",
         type=str,
-        default="",
-        help="Prefix words/text to run before intervention when --use-prefix-context=true.",
+        default="The apple is red.",
+        help="Prefix sentence to run before intervention when --use-prefix-context=true.",
     )
     neuron_scan.add_argument("--return-batch-size", type=int, default=1000, help="Rows per batch in returned payload (default: 1000)")
 
@@ -251,9 +257,26 @@ def start_app(
     if bool(ui_cfg.get("enabled", True)) and bool(ui_cfg.get("start_server_on_boot", True)):
         from src.ui import run_ui_server
 
+        # Boot order: start UI first (independent thread), then warm up model in background.
+        # This keeps the UI responsive immediately even when model warmup is heavy.
+        ui_runtime_config = dict(effective_config)
+        ui_runtime_cfg = dict((ui_runtime_config.get("ui") or {}))
+        ui_runtime_cfg.setdefault("prefer_builtin_threading", True)
+        ui_runtime_config["ui"] = ui_runtime_cfg
+
+        ui_thread = threading.Thread(
+            target=run_ui_server,
+            kwargs={"config": ui_runtime_config, "config_path": config_path},
+            name="ui-server",
+            daemon=False,
+        )
+        ui_thread.start()
+
         if should_start_llama:
-            _start_llama_after_ui_boot(effective_config, preload_hidden=bool(hidden_store_cfg.get("preload_on_boot", True)))
-        run_ui_server(effective_config, config_path=config_path)
+            _start_llama_background(effective_config, preload_hidden=bool(hidden_store_cfg.get("preload_on_boot", True)))
+
+        # Keep process alive with the UI server thread lifecycle.
+        ui_thread.join()
         return
 
     if should_start_llama:
@@ -266,9 +289,8 @@ def start_app(
     print("No server started because ui.enabled/start_server_on_boot is false.")
 
 
-def _start_llama_after_ui_boot(config: dict[str, Any], *, preload_hidden: bool) -> None:
+def _start_llama_background(config: dict[str, Any], *, preload_hidden: bool) -> None:
     def _runner() -> None:
-        time.sleep(1.0)
         try:
             print("[startup] background model warmup started...")
             api = start_llama_api(config)
@@ -305,6 +327,14 @@ def _execute_parsed_args(args: argparse.Namespace, config: dict[str, Any]) -> di
             words_csv=args.words_csv,
             include_bos=bool(args.include_bos),
             include_assistant=bool(args.include_assistant),
+            config=config,
+            config_path=args.config,
+        )
+        return {"hidden_state_heatmap": heatmap}
+
+    if args.command == "run-sentence-next-word":
+        heatmap = run_sentence_next_word_study(
+            sentence=str(args.sentence or ""),
             config=config,
             config_path=args.config,
         )

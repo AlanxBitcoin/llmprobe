@@ -10,7 +10,8 @@ from .probe_layer_neuron import (
     run_starting_from_middle_layer_probe,
 )
 from .probe_linear import build_probe_dataset, export_probe_results, load_labeled_words, train_linear_probe
-from .probe_single_word_hidden_state import (
+from .probe_hidden_state import (
+    fetch_sentence_last_token_hidden_state,
     fetch_single_word_hidden_state,
     rank_last_layer_logits_from_heatmap,
 )
@@ -19,6 +20,7 @@ __all__ = [
     "build_probe_dataset",
     "export_probe_results",
     "fetch_single_word_hidden_state",
+    "fetch_sentence_last_token_hidden_state",
     "load_labeled_words",
     "rank_last_layer_logits_from_heatmap",
     "rank_logits_after_penultimate_topk_intervention",

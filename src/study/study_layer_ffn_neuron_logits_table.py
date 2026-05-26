@@ -14,10 +14,10 @@ from typing import Any
 from datetime import datetime
 
 import torch
+import torch.nn.functional as F
 
 from ..config import load_config
 from ..runtime_api import RuntimeRequest, get_runtime_api, start_llama_api
-from ..utils.logits import rank_vector_by_logits
 from ..probes.probe_layer_ffn_neuron import run_multi_ffn_neurons_from_layer_probe
 from ..utils.utils import ensure_dir, write_csv
 
@@ -54,6 +54,70 @@ def _build_history_csv_rows(rows: list[dict[str, Any]], *, top_k: int) -> list[d
             item[f"rank_{rank}_logit"] = src.get("logit", "")
         out.append(item)
     return out
+
+
+def _rank_hidden_batch_by_logits(
+    *,
+    model,
+    tokenizer,
+    hidden_batch: torch.Tensor,
+    top_k: int = 15,
+    apply_final_norm: bool = False,
+) -> list[list[dict[str, Any]]]:
+    lm_head = getattr(model, "lm_head", None)
+    if lm_head is None:
+        return [[] for _ in range(int(hidden_batch.shape[0]))]
+    if hidden_batch.ndim != 2:
+        raise ValueError(f"hidden_batch must be [B,H], got shape={tuple(hidden_batch.shape)}")
+
+    hidden_for_logits = hidden_batch.to(dtype=lm_head.weight.dtype)
+    if apply_final_norm:
+        base_model = getattr(model, "model", None)
+        final_norm = getattr(base_model, "norm", None)
+        if final_norm is not None:
+            hidden_for_logits = final_norm(hidden_for_logits)
+
+    with torch.no_grad():
+        cfg = getattr(model, "config", None)
+        pretraining_tp = int(getattr(cfg, "pretraining_tp", 1) or 1)
+        if pretraining_tp > 1:
+            vocab_size = int(getattr(cfg, "vocab_size", lm_head.weight.shape[0]))
+            lm_head_slices = lm_head.weight.split(vocab_size // pretraining_tp, dim=0)
+            logits_chunks = [F.linear(hidden_for_logits, lm_head_slice) for lm_head_slice in lm_head_slices]
+            logits = torch.cat(logits_chunks, dim=-1).to(dtype=torch.float32)
+        else:
+            logits = lm_head(hidden_for_logits).to(dtype=torch.float32)
+        k = min(int(top_k), int(logits.shape[-1]))
+        top_vals, top_ids = torch.topk(logits, k=k, dim=-1)
+
+    top_ids_cpu = top_ids.detach().cpu().tolist()
+    top_vals_cpu = top_vals.detach().cpu().tolist()
+    flat_ids = [int(tok_id) for row in top_ids_cpu for tok_id in row]
+    if tokenizer is not None and flat_ids:
+        flat_tokens = tokenizer.convert_ids_to_tokens(flat_ids)
+        flat_texts = [tokenizer.decode([int(tok_id)], clean_up_tokenization_spaces=False) for tok_id in flat_ids]
+    else:
+        flat_tokens = ["" for _ in flat_ids]
+        flat_texts = ["" for _ in flat_ids]
+
+    all_rows: list[list[dict[str, Any]]] = []
+    cursor = 0
+    for b, ids_row in enumerate(top_ids_cpu):
+        vals_row = top_vals_cpu[b]
+        rows: list[dict[str, Any]] = []
+        for i, tok_id in enumerate(ids_row, start=1):
+            rows.append(
+                {
+                    "rank": int(i),
+                    "token_id": int(tok_id),
+                    "token": str(flat_tokens[cursor]),
+                    "text": str(flat_texts[cursor]),
+                    "logit": float(vals_row[i - 1]),
+                }
+            )
+            cursor += 1
+        all_rows.append(rows)
+    return all_rows
 
 
 def run_study(
@@ -182,17 +246,17 @@ def run_study(
                 "ui_tasks": [{"name": "render_neuron_logits_table", "value_key": "neuron_logits_rows"}],
             }
         final_batch = hidden_states[-1].detach()  # [B,S,H]
-        bsz = int(final_batch.shape[0])
+        logits_batch = _rank_hidden_batch_by_logits(
+            model=model,
+            tokenizer=tokenizer,
+            hidden_batch=final_batch[:, -1, :],
+            top_k=top_k,
+            apply_final_norm=False,
+        )
+        bsz = int(len(logits_batch))
         for local_idx in range(bsz):
             neuron_id = int(neuron_ids[local_idx])
-            final_vec = final_batch[local_idx, -1, :]
-            logits_rows = rank_vector_by_logits(
-                model=model,
-                vector=final_vec,
-                tokenizer=tokenizer,
-                top_k=top_k,
-                apply_final_norm=False,
-            )
+            logits_rows = logits_batch[local_idx]
             row = {
                 "neuron_id": int(neuron_id),
                 "top_logits": logits_rows,

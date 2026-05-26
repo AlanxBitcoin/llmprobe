@@ -17,8 +17,7 @@ import torch
 from ..config import load_config
 from ..runtime_api import RuntimeRequest, get_runtime_api, start_llama_api
 from ..probes.probe_layer_neuron import run_layer_neuron_batch_to_logits_probe
-from ..probes.probe_single_word_hidden_state import fetch_single_word_hidden_state
-from ..utils.token_hidden_store import build_protocol_input_ids, parse_token_ids_with_bos_alias
+from ..probes.probe_hidden_state import fetch_sentence_last_token_hidden_state
 
 
 def _get_or_start_runtime_api(config: dict[str, Any]):
@@ -125,7 +124,10 @@ def run_study(
     token_id = _resolve_bootstrap_token_id(tokenizer)
     input_ids = torch.tensor([[int(token_id)]], dtype=torch.long, device=device)
     base_last_hidden = None
+    base_sequence_hidden = None
     prefix_token_ids: list[int] = []
+    prefix_attention_by_layer: list[dict[str, Any]] = []
+    attention_reused_for_intervention = False
     prefix_enabled = bool(use_prefix_context)
     if prefix_enabled:
         text = str(prefix_text or "").strip()
@@ -137,16 +139,14 @@ def run_study(
                 "neuron_logits_rows": [],
                 "ui_tasks": [{"name": "render_neuron_logits_table", "value_key": "neuron_logits_rows"}],
             }
-        prefix_heatmap = fetch_single_word_hidden_state(
-            word=text,
-            include_bos=True,
-            include_assistant=False,
+        prefix_ctx = fetch_sentence_last_token_hidden_state(
+            sentence=text,
             config=cfg,
         )
-        if not isinstance(prefix_heatmap, dict) or not prefix_heatmap.get("ok"):
+        if not isinstance(prefix_ctx, dict) or not prefix_ctx.get("ok"):
             reason = (
-                str(prefix_heatmap.get("reason"))
-                if isinstance(prefix_heatmap, dict) and prefix_heatmap.get("reason")
+                str(prefix_ctx.get("reason"))
+                if isinstance(prefix_ctx, dict) and prefix_ctx.get("reason")
                 else "prefix_hidden_fetch_failed"
             )
             return {
@@ -154,23 +154,13 @@ def run_study(
                 "reason": reason,
                 "message": reason,
                 "prefix_word": text,
-                "prefix_detail": prefix_heatmap if isinstance(prefix_heatmap, dict) else {},
+                "prefix_detail": prefix_ctx if isinstance(prefix_ctx, dict) else {},
                 "neuron_logits_rows": [],
                 "ui_tasks": [{"name": "render_neuron_logits_table", "value_key": "neuron_logits_rows"}],
             }
         try:
-            prefix_token_ids = [int(x) for x in parse_token_ids_with_bos_alias(tokenizer, text)]
-            if len(prefix_token_ids) != 1:
-                return {
-                    "ok": False,
-                    "reason": "single_token_required",
-                    "message": "single_token_required",
-                    "prefix_word": text,
-                    "token_count": int(len(prefix_token_ids)),
-                    "neuron_logits_rows": [],
-                    "ui_tasks": [{"name": "render_neuron_logits_table", "value_key": "neuron_logits_rows"}],
-                }
-            matrix = prefix_heatmap.get("matrix") or []
+            prefix_token_ids = [int(x) for x in (prefix_ctx.get("prefix_token_ids") or [])]
+            matrix = prefix_ctx.get("matrix") or []
             row_idx = int(layer_idx) + 1  # row0=embedding, row(i+1)=layer_i output
             if not (0 <= row_idx < len(matrix)):
                 return {
@@ -181,9 +171,43 @@ def run_study(
                     "ui_tasks": [{"name": "render_neuron_logits_table", "value_key": "neuron_logits_rows"}],
                 }
             base_last_hidden = torch.as_tensor(matrix[row_idx], device=device, dtype=model_dtype).flatten()
-            protocol = str(prefix_heatmap.get("protocol") or "bos1_assistant0")
-            protocol_ids = build_protocol_input_ids(tokenizer, protocol, prefix_token_ids)
-            input_ids = torch.tensor([protocol_ids], dtype=torch.long, device=device)
+            input_ids_list = [int(x) for x in (prefix_ctx.get("input_ids") or [])]
+            if not input_ids_list:
+                return {
+                    "ok": False,
+                    "reason": "prefix_input_ids_missing",
+                    "message": "prefix_input_ids_missing",
+                    "neuron_logits_rows": [],
+                    "ui_tasks": [{"name": "render_neuron_logits_table", "value_key": "neuron_logits_rows"}],
+                }
+            input_ids = torch.tensor([input_ids_list], dtype=torch.long, device=device)
+            prefix_attention_by_layer = list(prefix_ctx.get("last_token_attention_by_layer") or [])
+            # Reuse probe-returned full sequence hidden states (no extra sentence forward).
+            prefix_hidden_states = prefix_ctx.get("all_token_hidden_by_layer") or []
+            if not prefix_hidden_states:
+                return {
+                    "ok": False,
+                    "reason": "prefix_hidden_states_missing",
+                    "message": "prefix_hidden_states_missing",
+                    "neuron_logits_rows": [],
+                    "ui_tasks": [{"name": "render_neuron_logits_table", "value_key": "neuron_logits_rows"}],
+                }
+            seq_row_idx = int(layer_idx) + 1  # row0=embedding, row(i+1)=layer_i output
+            if not (0 <= seq_row_idx < len(prefix_hidden_states)):
+                return {
+                    "ok": False,
+                    "reason": f"prefix_hidden_unavailable_for_layer:{layer_idx}",
+                    "message": f"prefix_hidden_unavailable_for_layer:{layer_idx}",
+                    "neuron_logits_rows": [],
+                    "ui_tasks": [{"name": "render_neuron_logits_table", "value_key": "neuron_logits_rows"}],
+                }
+            base_sequence_hidden = torch.as_tensor(
+                prefix_hidden_states[seq_row_idx],
+                device=device,
+                dtype=model_dtype,
+            ).unsqueeze(0)
+            # Perf rule: neuron intervention path reuses initial sentence attention snapshots.
+            attention_reused_for_intervention = True
         except Exception as exc:  # noqa: BLE001
             reason = str(exc)
             return {
@@ -210,7 +234,10 @@ def run_study(
         row_idx = torch.arange(len(neuron_ids), device=device, dtype=torch.long)
         col_idx = torch.tensor(neuron_ids, device=device, dtype=torch.long)
         one_hot_batch[row_idx, col_idx] = float(activation_value)
-        if prefix_enabled and base_last_hidden is not None:
+        if prefix_enabled and base_sequence_hidden is not None:
+            hidden_batch = base_sequence_hidden.expand(len(neuron_ids), -1, -1).clone()
+            hidden_batch[:, -1, :] = hidden_batch[:, -1, :] + one_hot_batch
+        elif prefix_enabled and base_last_hidden is not None:
             hidden_batch = base_last_hidden.unsqueeze(0).expand(len(neuron_ids), -1).clone()
             hidden_batch = hidden_batch + one_hot_batch
         else:
@@ -284,6 +311,8 @@ def run_study(
         "use_prefix_context": bool(prefix_enabled),
         "prefix_text": str(prefix_text or ""),
         "prefix_token_count": int(len(prefix_token_ids)),
+        "prefix_last_token_attention_by_layer": prefix_attention_by_layer,
+        "attention_reused_for_intervention": bool(attention_reused_for_intervention),
         "threshold": 15.0,
         "top_k": int(top_k),
         "hidden_dim": int(hidden_dim),

@@ -13,7 +13,7 @@ import re
 import numpy as np
 
 from ..config import load_config
-from ..probes.probe_single_word_hidden_state import rank_last_layer_logits_from_heatmap
+from ..probes.probe_hidden_state import rank_last_layer_logits_from_heatmap
 from ..runtime_api import RuntimeRequest, get_runtime_api, start_llama_api
 from ..utils.extract_hidden import extract_single_word_hidden_matrix
 from ..utils.token_hidden_store import protocol_from_flags
@@ -67,35 +67,6 @@ def run_study(
             config=merged_cfg,
         )
         if not isinstance(item, dict) or not item.get("ok"):
-            # Strict validation rule for batch mode:
-            # if any input word is not single-token, fail fast and return error to UI.
-            if isinstance(item, dict) and str(item.get("reason") or "") == "single_token_required":
-                return {
-                    "ok": False,
-                    "reason": "single_token_required",
-                    "word": word,
-                    "offending_word": word,
-                    "token_count": int(item.get("token_count") or 0),
-                    "token_ids": item.get("token_ids") or [],
-                    "tokens": item.get("tokens") or [],
-                    "words_input": words_csv,
-                    "words": words,
-                    "successful_words": [x["word"] for x in ok_items],
-                    "failed_words": failed_items + [{"word": word, "reason": "single_token_required"}],
-                    "include_bos": bool(include_bos),
-                    "include_assistant": bool(include_assistant),
-                    "matrix": [],
-                    "rows": 0,
-                    "cols": 0,
-                    "row_labels": [],
-                    "top_logits": [],
-                    "logits_source": "none",
-                    "logits_error": None,
-                    "ui_tasks": [
-                        {"name": "render_heatmap", "value_key": "heatmaps"},
-                        {"name": "render_logits", "value_key": "top_logits"},
-                    ],
-                }
             failed_items.append(
                 {
                     "word": word,
