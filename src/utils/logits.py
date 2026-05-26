@@ -136,6 +136,7 @@ def rank_vector_logits_and_cosine(
     compare_matrix: torch.Tensor | None = None,
     top_k: int = 15,
     apply_final_norm: bool = True,
+    include_cosine: bool = True,
 ) -> list[dict[str, Any]]:
     """Top-k by logits, with cosine similarity attached for the same ids.
 
@@ -150,6 +151,9 @@ def rank_vector_logits_and_cosine(
     )
     if not logits_rows:
         return []
+
+    if not bool(include_cosine):
+        return logits_rows
 
     device = next(model.parameters()).device
     hidden = torch.as_tensor(vector, dtype=torch.float32, device=device).flatten()

@@ -16,8 +16,9 @@ import torch
 
 from ..config import load_config
 from ..runtime_api import RuntimeRequest, get_runtime_api, start_llama_api
-from ..utils.logits import rank_vector_by_logits
-from ..probes.single_word_hidden_state_probe import run_starting_from_middle_layer_probe
+from ..probes.probe_layer_neuron import run_layer_neuron_batch_to_logits_probe
+from ..probes.probe_single_word_hidden_state import fetch_single_word_hidden_state
+from ..utils.token_hidden_store import build_protocol_input_ids, parse_token_ids_with_bos_alias
 
 
 def _get_or_start_runtime_api(config: dict[str, Any]):
@@ -41,7 +42,9 @@ def run_study(
     *,
     intervention_layer: int = 30,
     activation_value: float = 10.0,
-    return_batch_size: int = 128,
+    use_prefix_context: bool = False,
+    prefix_text: str = "",
+    return_batch_size: int = 1000,
     config: dict[str, Any] | None = None,
     config_path: str | Path = "configs/custom.yaml",
 ) -> dict[str, Any]:
@@ -121,73 +124,142 @@ def run_study(
     model_dtype = next(model.parameters()).dtype
     token_id = _resolve_bootstrap_token_id(tokenizer)
     input_ids = torch.tensor([[int(token_id)]], dtype=torch.long, device=device)
+    base_last_hidden = None
+    prefix_token_ids: list[int] = []
+    prefix_enabled = bool(use_prefix_context)
+    if prefix_enabled:
+        text = str(prefix_text or "").strip()
+        if not text:
+            return {
+                "ok": False,
+                "reason": "prefix_text_required",
+                "message": "prefix_text_required",
+                "neuron_logits_rows": [],
+                "ui_tasks": [{"name": "render_neuron_logits_table", "value_key": "neuron_logits_rows"}],
+            }
+        prefix_heatmap = fetch_single_word_hidden_state(
+            word=text,
+            include_bos=True,
+            include_assistant=False,
+            config=cfg,
+        )
+        if not isinstance(prefix_heatmap, dict) or not prefix_heatmap.get("ok"):
+            reason = (
+                str(prefix_heatmap.get("reason"))
+                if isinstance(prefix_heatmap, dict) and prefix_heatmap.get("reason")
+                else "prefix_hidden_fetch_failed"
+            )
+            return {
+                "ok": False,
+                "reason": reason,
+                "message": reason,
+                "prefix_word": text,
+                "prefix_detail": prefix_heatmap if isinstance(prefix_heatmap, dict) else {},
+                "neuron_logits_rows": [],
+                "ui_tasks": [{"name": "render_neuron_logits_table", "value_key": "neuron_logits_rows"}],
+            }
+        try:
+            prefix_token_ids = [int(x) for x in parse_token_ids_with_bos_alias(tokenizer, text)]
+            if len(prefix_token_ids) != 1:
+                return {
+                    "ok": False,
+                    "reason": "single_token_required",
+                    "message": "single_token_required",
+                    "prefix_word": text,
+                    "token_count": int(len(prefix_token_ids)),
+                    "neuron_logits_rows": [],
+                    "ui_tasks": [{"name": "render_neuron_logits_table", "value_key": "neuron_logits_rows"}],
+                }
+            matrix = prefix_heatmap.get("matrix") or []
+            row_idx = int(layer_idx) + 1  # row0=embedding, row(i+1)=layer_i output
+            if not (0 <= row_idx < len(matrix)):
+                return {
+                    "ok": False,
+                    "reason": f"prefix_hidden_unavailable_for_layer:{layer_idx}",
+                    "message": f"prefix_hidden_unavailable_for_layer:{layer_idx}",
+                    "neuron_logits_rows": [],
+                    "ui_tasks": [{"name": "render_neuron_logits_table", "value_key": "neuron_logits_rows"}],
+                }
+            base_last_hidden = torch.as_tensor(matrix[row_idx], device=device, dtype=model_dtype).flatten()
+            protocol = str(prefix_heatmap.get("protocol") or "bos1_assistant0")
+            protocol_ids = build_protocol_input_ids(tokenizer, protocol, prefix_token_ids)
+            input_ids = torch.tensor([protocol_ids], dtype=torch.long, device=device)
+        except Exception as exc:  # noqa: BLE001
+            reason = str(exc)
+            return {
+                "ok": False,
+                "reason": reason,
+                "message": reason,
+                "neuron_logits_rows": [],
+                "ui_tasks": [{"name": "render_neuron_logits_table", "value_key": "neuron_logits_rows"}],
+            }
 
     top_k = 15
     batch_size = max(1, int(return_batch_size))
+    compute_batch_size = max(
+        1,
+        int((((cfg or {}).get("runtime") or {}).get("neuron_parallel_batch_size", 64))),
+    )
     rows: list[dict[str, Any]] = []
     batches: list[dict[str, Any]] = []
     current_batch: list[dict[str, Any]] = []
 
-    for neuron_id in range(hidden_dim):
-        one_hot = torch.zeros(hidden_dim, dtype=model_dtype, device=device)
-        one_hot[neuron_id] = float(activation_value)
-        transit, transit_error = run_starting_from_middle_layer_probe(
-            word=None,
+    for start in range(0, int(hidden_dim), int(compute_batch_size)):
+        neuron_ids = list(range(start, min(start + int(compute_batch_size), int(hidden_dim))))
+        one_hot_batch = torch.zeros((len(neuron_ids), hidden_dim), dtype=model_dtype, device=device)
+        row_idx = torch.arange(len(neuron_ids), device=device, dtype=torch.long)
+        col_idx = torch.tensor(neuron_ids, device=device, dtype=torch.long)
+        one_hot_batch[row_idx, col_idx] = float(activation_value)
+        if prefix_enabled and base_last_hidden is not None:
+            hidden_batch = base_last_hidden.unsqueeze(0).expand(len(neuron_ids), -1).clone()
+            hidden_batch = hidden_batch + one_hot_batch
+        else:
+            hidden_batch = one_hot_batch
+        input_ids_batch = input_ids.expand(len(neuron_ids), -1).contiguous()
+        logits_batch_rows, logits_error = run_layer_neuron_batch_to_logits_probe(
+            bundle=bundle,
             config=cfg,
             start_layer_idx=layer_idx,
-            hidden_state=one_hot,
-            input_ids_override=input_ids,
-            bundle_override=bundle,
+            input_ids=input_ids_batch,
+            hidden_batch=hidden_batch,
+            top_k=top_k,
         )
-        if transit is None:
+        if logits_batch_rows is None:
             return {
                 "ok": False,
                 "reason": "probe_starting_from_middle_layer_failed",
-                "error": str(transit_error or "unknown"),
+                "error": str(logits_error or "unknown"),
                 "neuron_logits_rows": rows,
                 "ui_tasks": [{"name": "render_neuron_logits_table", "value_key": "neuron_logits_rows"}],
             }
-        outputs = transit["result"]["outputs"]
-        hidden_states = getattr(outputs, "hidden_states", None)
-        if not hidden_states:
-            return {
-                "ok": False,
-                "reason": "missing_hidden_states",
-                "neuron_logits_rows": rows,
-                "ui_tasks": [{"name": "render_neuron_logits_table", "value_key": "neuron_logits_rows"}],
+        bsz = int(len(logits_batch_rows))
+        for local_idx in range(bsz):
+            neuron_id = int(neuron_ids[local_idx])
+            logits_rows = logits_batch_rows[local_idx]
+            row = {
+                "neuron_id": int(neuron_id),
+                "top_logits": logits_rows,
             }
-        final_vec = hidden_states[-1][0, -1, :].detach()
-        logits_rows = rank_vector_by_logits(
-            model=model,
-            vector=final_vec,
-            tokenizer=tokenizer,
-            top_k=top_k,
-            apply_final_norm=False,
-        )
-        row = {
-            "neuron_id": int(neuron_id),
-            "top_logits": logits_rows,
-        }
-        rows.append(row)
-        current_batch.append(row)
-        if len(current_batch) >= batch_size:
-            start_id = int(current_batch[0]["neuron_id"])
-            end_id = int(current_batch[-1]["neuron_id"])
-            batches.append(
-                {
-                    "batch_index": int(len(batches)),
-                    "start_neuron_id": start_id,
-                    "end_neuron_id": end_id,
-                    "rows": current_batch,
-                }
-            )
+            rows.append(row)
+            current_batch.append(row)
+            if len(current_batch) >= batch_size:
+                start_id = int(current_batch[0]["neuron_id"])
+                end_id = int(current_batch[-1]["neuron_id"])
+                batches.append(
+                    {
+                        "batch_index": int(len(batches)),
+                        "start_neuron_id": start_id,
+                        "end_neuron_id": end_id,
+                        "rows": current_batch,
+                    }
+                )
+                print(
+                    f"[layer_neuron_logits_table] batch_done index={len(batches)-1} range={start_id}-{end_id} processed={len(rows)}/{hidden_dim}"
+                )
+                current_batch = []
+        if len(rows) % 128 == 0 or len(rows) == hidden_dim:
             print(
-                f"[layer_neuron_logits_table] batch_done index={len(batches)-1} range={start_id}-{end_id} processed={neuron_id+1}/{hidden_dim}"
-            )
-            current_batch = []
-        if (neuron_id + 1) % 128 == 0 or neuron_id + 1 == hidden_dim:
-            print(
-                f"[layer_neuron_logits_table] progress processed={neuron_id+1}/{hidden_dim} kept={len(rows)}"
+                f"[layer_neuron_logits_table] progress processed={len(rows)}/{hidden_dim} kept={len(rows)} compute_batch_size={compute_batch_size}"
             )
     if current_batch:
         start_id = int(current_batch[0]["neuron_id"])
@@ -209,12 +281,16 @@ def run_study(
         "study": "layer_neuron_single_activation_logits",
         "intervention_layer": int(layer_number),
         "activation_value": float(activation_value),
+        "use_prefix_context": bool(prefix_enabled),
+        "prefix_text": str(prefix_text or ""),
+        "prefix_token_count": int(len(prefix_token_ids)),
         "threshold": 15.0,
         "top_k": int(top_k),
         "hidden_dim": int(hidden_dim),
         "returned_rows": int(len(rows)),
         "filtered_out_rows": 0,
         "return_batch_size": int(batch_size),
+        "compute_batch_size": int(compute_batch_size),
         "neuron_logits_rows": rows,
         "neuron_logits_batches": batches,
         "ui_tasks": [{"name": "render_neuron_logits_table", "value_key": "neuron_logits_batches"}],

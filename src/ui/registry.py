@@ -179,6 +179,9 @@ def build_command_args(action: UIAction, params: dict[str, Any]) -> list[str]:
     if action.command == "run-layer-neuron-logits-table":
         intervention_layer = params.get("intervention_layer")
         activation_value = params.get("activation_value")
+        use_prefix_context = params.get("use_prefix_context")
+        use_prefix_context_flag = bool(use_prefix_context) if use_prefix_context is not None else False
+        prefix_text = str(params.get("prefix_text") or "")
         return_batch_size = params.get("return_batch_size")
         return [
             action.command,
@@ -186,8 +189,12 @@ def build_command_args(action: UIAction, params: dict[str, Any]) -> list[str]:
             str(30 if intervention_layer is None else intervention_layer),
             "--activation-value",
             str(10.0 if activation_value is None else activation_value),
+            "--use-prefix-context",
+            "true" if use_prefix_context_flag else "false",
+            "--prefix-text",
+            prefix_text,
             "--return-batch-size",
-            str(128 if return_batch_size is None else return_batch_size),
+            str(1000 if return_batch_size is None else return_batch_size),
         ]
     if action.command == "run-layer-ffn-neuron-logits-table":
         intervention_layer = params.get("intervention_layer")
@@ -200,7 +207,7 @@ def build_command_args(action: UIAction, params: dict[str, Any]) -> list[str]:
             "--activation-value",
             str(10.0 if activation_value is None else activation_value),
             "--return-batch-size",
-            str(128 if return_batch_size is None else return_batch_size),
+            str(1000 if return_batch_size is None else return_batch_size),
         ]
     if action.command == "run-color-words-experiment":
         return [

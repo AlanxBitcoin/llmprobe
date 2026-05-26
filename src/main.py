@@ -41,7 +41,7 @@ if "MPLCONFIGDIR" not in os.environ:
 from src.config import load_config
 from src.model_loader import get_model_bundle
 from src.pipeline import ProbePipeline
-from src.probes.attribute_probe import (
+from src.probes.probe_attribute import (
     build_feature_bank,
     fit_full_attribute_probes,
     load_attribute_rows,
@@ -166,7 +166,19 @@ def build_parser() -> argparse.ArgumentParser:
     )
     neuron_scan.add_argument("--intervention-layer", type=int, default=30, help="Decoder layer number, 1-based (default: 30)")
     neuron_scan.add_argument("--activation-value", type=float, default=10.0, help="Neuron activation value (default: 10.0)")
-    neuron_scan.add_argument("--return-batch-size", type=int, default=128, help="Rows per batch in returned payload (default: 128)")
+    neuron_scan.add_argument(
+        "--use-prefix-context",
+        type=_parse_bool_flag,
+        default=False,
+        help="If true, run prefix text first and add single-neuron activation on top of that layer hidden state.",
+    )
+    neuron_scan.add_argument(
+        "--prefix-text",
+        type=str,
+        default="",
+        help="Prefix words/text to run before intervention when --use-prefix-context=true.",
+    )
+    neuron_scan.add_argument("--return-batch-size", type=int, default=1000, help="Rows per batch in returned payload (default: 1000)")
 
     ffn_neuron_scan = subparsers.add_parser(
         "run-layer-ffn-neuron-logits-table",
@@ -174,7 +186,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     ffn_neuron_scan.add_argument("--intervention-layer", type=int, default=30, help="Decoder layer number, 1-based (default: 30)")
     ffn_neuron_scan.add_argument("--activation-value", type=float, default=10.0, help="FFN neuron activation value (default: 10.0)")
-    ffn_neuron_scan.add_argument("--return-batch-size", type=int, default=128, help="Rows per batch in returned payload (default: 128)")
+    ffn_neuron_scan.add_argument("--return-batch-size", type=int, default=1000, help="Rows per batch in returned payload (default: 1000)")
 
     combo = subparsers.add_parser("run-word-sum", help="Analyze the layer-8 summed representation of two or more words")
     combo.add_argument("words", nargs="+", help="Two or more bare English words")
@@ -312,6 +324,8 @@ def _execute_parsed_args(args: argparse.Namespace, config: dict[str, Any]) -> di
         heatmap = run_layer_neuron_logits_table_study(
             intervention_layer=int(args.intervention_layer),
             activation_value=float(args.activation_value),
+            use_prefix_context=bool(args.use_prefix_context),
+            prefix_text=str(args.prefix_text or ""),
             return_batch_size=int(args.return_batch_size),
             config=config,
             config_path=args.config,

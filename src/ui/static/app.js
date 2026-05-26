@@ -178,6 +178,7 @@ function renderForm(fields) {
     paramsForm.appendChild(wrap);
   });
   updateBosAssistantVisibility();
+  updatePrefixContextVisibility();
   updateBatchNameDropdown();
 }
 
@@ -212,6 +213,7 @@ function toDisplayProtocol(heatmap) {
 
 function updateCommandPreview() {
   updateBosAssistantVisibility();
+  updatePrefixContextVisibility();
   updateBatchNameDropdownVisibility();
   updateHistoryButtonVisibility();
   if (!selectedAction) {
@@ -224,6 +226,15 @@ function updateCommandPreview() {
     null,
     2,
   );
+}
+
+function updatePrefixContextVisibility() {
+  const usePrefixInput = paramsForm.elements.namedItem("use_prefix_context");
+  const prefixTextInput = paramsForm.elements.namedItem("prefix_text");
+  if (!usePrefixInput || !prefixTextInput) return;
+  const prefixWrap = prefixTextInput.closest(".field");
+  if (!prefixWrap) return;
+  prefixWrap.style.display = Boolean(usePrefixInput.checked) ? "" : "none";
 }
 
 function updateHistoryButtonVisibility() {

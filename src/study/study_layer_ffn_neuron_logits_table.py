@@ -18,7 +18,7 @@ import torch
 from ..config import load_config
 from ..runtime_api import RuntimeRequest, get_runtime_api, start_llama_api
 from ..utils.logits import rank_vector_by_logits
-from ..probes.single_word_hidden_state_probe import run_multi_ffn_neurons_from_layer_probe
+from ..probes.probe_layer_ffn_neuron import run_multi_ffn_neurons_from_layer_probe
 from ..utils.utils import ensure_dir, write_csv
 
 
@@ -60,7 +60,7 @@ def run_study(
     *,
     intervention_layer: int = 30,
     activation_value: float = 10.0,
-    return_batch_size: int = 128,
+    return_batch_size: int = 1000,
     config: dict[str, Any] | None = None,
     config_path: str | Path = "configs/custom.yaml",
 ) -> dict[str, Any]:

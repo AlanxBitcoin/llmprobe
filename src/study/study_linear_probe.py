@@ -10,7 +10,7 @@ from typing import Any
 
 from ..config import load_config
 from ..model_loader import get_model_bundle
-from ..probes.linear_probe import (
+from ..probes.probe_linear import (
     build_probe_dataset,
     export_probe_results,
     load_labeled_words,

@@ -15,7 +15,7 @@ from typing import Any
 
 import numpy as np
 
-from .probes.attribute_probe import build_feature_bank, fit_full_attribute_probes, load_attribute_rows, predict_word_attributes
+from .probes.probe_attribute import build_feature_bank, fit_full_attribute_probes, load_attribute_rows, predict_word_attributes
 from .probes.concept_match import ConceptMatcher
 from .utils.extract_hidden import extract_sequence_positional_states, extract_word_hidden_states, summarize_top_dims
 from .probes.symbolic_attributes import SymbolicAttributeRegistry

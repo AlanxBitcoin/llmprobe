@@ -29,7 +29,7 @@ from pathlib import Path
 from typing import Any
 
 from ..config import load_config
-from ..probes.single_word_hidden_state_probe import fetch_single_word_hidden_state, rank_last_layer_logits_from_heatmap
+from ..probes.probe_single_word_hidden_state import fetch_single_word_hidden_state, rank_last_layer_logits_from_heatmap
 
 
 def run_study(

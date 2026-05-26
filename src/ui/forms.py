@@ -42,12 +42,14 @@ FORM_SCHEMAS: dict[str, list[dict[str, Any]]] = {
     "layer_neuron_logits_table_form": [
         {"name": "intervention_layer", "label": "Layer", "type": "number", "default": 30, "min": 1, "step": 1},
         {"name": "activation_value", "label": "Activation Value", "type": "number", "default": 10.0},
-        {"name": "return_batch_size", "label": "Return Batch Size", "type": "number", "default": 128, "min": 1},
+        {"name": "use_prefix_context", "label": "Use Prefix Context", "type": "checkbox", "default": False},
+        {"name": "prefix_text", "label": "Prefix Words/Text", "type": "text", "default": "apple", "required": False},
+        {"name": "return_batch_size", "label": "Return Batch Size", "type": "number", "default": 1000, "min": 1},
     ],
     "layer_ffn_neuron_logits_table_form": [
         {"name": "intervention_layer", "label": "Layer", "type": "number", "default": 30, "min": 1, "step": 1},
         {"name": "activation_value", "label": "Activation Value", "type": "number", "default": 10.0},
-        {"name": "return_batch_size", "label": "Return Batch Size", "type": "number", "default": 128, "min": 1},
+        {"name": "return_batch_size", "label": "Return Batch Size", "type": "number", "default": 1000, "min": 1},
     ],
     "color_words_form": [
         {"name": "word_file", "label": "Word file", "type": "text", "default": "data/color_words.txt"},

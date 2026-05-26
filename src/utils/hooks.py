@@ -812,6 +812,38 @@ def starting_from_middle_layer(
         batch_size = int(current_hidden.shape[0])
         seq_len = int(current_hidden.shape[1])
         device = current_hidden.device
+        # Build an explicit causal attention mask so continuation remains strictly autoregressive.
+        # Shape: [B, 1, S, S], additive mask (0 for keep, -inf for block).
+        if attention_mask is None:
+            causal = torch.triu(
+                torch.ones((seq_len, seq_len), device=device, dtype=torch.bool),
+                diagonal=1,
+            )
+            min_val = torch.finfo(current_hidden.dtype).min
+            attn_mask_4d = torch.zeros((batch_size, 1, seq_len, seq_len), device=device, dtype=current_hidden.dtype)
+            attn_mask_4d = attn_mask_4d.masked_fill(causal.unsqueeze(0).unsqueeze(0), min_val)
+        else:
+            if attention_mask.ndim == 2:
+                # [B, S] -> padding mask + causal mask
+                pad = attention_mask.to(device=device)
+                pad_keep = (pad > 0).to(dtype=current_hidden.dtype)
+                pad_block = (1.0 - pad_keep) * torch.finfo(current_hidden.dtype).min
+                pad_block = pad_block[:, None, None, :].expand(batch_size, 1, seq_len, seq_len)
+                causal = torch.triu(
+                    torch.ones((seq_len, seq_len), device=device, dtype=torch.bool),
+                    diagonal=1,
+                )
+                causal_block = torch.zeros((batch_size, 1, seq_len, seq_len), device=device, dtype=current_hidden.dtype)
+                causal_block = causal_block.masked_fill(
+                    causal.unsqueeze(0).unsqueeze(0),
+                    torch.finfo(current_hidden.dtype).min,
+                )
+                attn_mask_4d = pad_block + causal_block
+            elif attention_mask.ndim == 4:
+                attn_mask_4d = attention_mask.to(device=device, dtype=current_hidden.dtype)
+            else:
+                raise ValueError(f"Unsupported attention_mask ndim={attention_mask.ndim}, expected 2 or 4")
+
         position_ids = torch.arange(seq_len, device=device, dtype=torch.long).unsqueeze(0).expand(batch_size, -1)
         cache_position = torch.arange(seq_len, device=device, dtype=torch.long)
         rotary = getattr(base_model, "rotary_emb", None) if base_model is not None else None
@@ -826,7 +858,7 @@ def starting_from_middle_layer(
             layer = layers[layer_idx]
             candidate_kwargs = {
                 "hidden_states": current_hidden,
-                "attention_mask": attention_mask,
+                "attention_mask": attn_mask_4d,
                 "position_ids": position_ids,
                 "past_key_value": None,
                 "output_attentions": False,

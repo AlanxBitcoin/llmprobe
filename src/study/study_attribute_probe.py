@@ -10,7 +10,7 @@ from typing import Any
 
 from ..config import load_config
 from ..model_loader import get_model_bundle
-from ..probes.attribute_probe import (
+from ..probes.probe_attribute import (
     build_feature_bank,
     export_attribute_probe_results,
     load_attribute_rows,

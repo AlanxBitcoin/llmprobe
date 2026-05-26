@@ -12,10 +12,10 @@ from pathlib import Path
 from typing import Any
 
 from ..config import load_config
-from ..probes.single_word_hidden_state_probe import (
+from ..probes.probe_layer_neuron import rank_logits_after_penultimate_topk_intervention
+from ..probes.probe_single_word_hidden_state import (
     fetch_single_word_hidden_state,
     rank_last_layer_logits_from_heatmap,
-    rank_logits_after_penultimate_topk_intervention,
 )
 
 

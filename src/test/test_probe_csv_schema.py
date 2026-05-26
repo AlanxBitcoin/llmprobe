@@ -5,8 +5,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from src.probes.attribute_probe import export_attribute_probe_results
-from src.probes.linear_probe import export_probe_results
+from src.probes.probe_attribute import export_attribute_probe_results
+from src.probes.probe_linear import export_probe_results
 
 
 def _read_header(path: Path) -> list[str]:

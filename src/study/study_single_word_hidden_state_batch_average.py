@@ -13,7 +13,7 @@ import re
 import numpy as np
 
 from ..config import load_config
-from ..probes.single_word_hidden_state_probe import rank_last_layer_logits_from_heatmap
+from ..probes.probe_single_word_hidden_state import rank_last_layer_logits_from_heatmap
 from ..runtime_api import RuntimeRequest, get_runtime_api, start_llama_api
 from ..utils.extract_hidden import extract_single_word_hidden_matrix
 from ..utils.token_hidden_store import protocol_from_flags
