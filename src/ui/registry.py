@@ -82,6 +82,14 @@ UI_ACTIONS: dict[str, UIAction] = {
         command="run-layer-neuron-logits-table",
         form_schema="layer_neuron_logits_table_form",
     ),
+    "study_layer_neurons": UIAction(
+        id="study_layer_neurons",
+        label="Layer Neurons",
+        description="Load a JSON neuron list, apply all neuron overrides once, and return heatmap + top15 logits.",
+        kind="study",
+        command="run-layer-neurons",
+        form_schema="layer_neurons_logits_table_form",
+    ),
     "study_layer_ffn_neuron_logits_table": UIAction(
         id="study_layer_ffn_neuron_logits_table",
         label="Layer FFN Neuron Logits Table",
@@ -219,6 +227,23 @@ def build_command_args(action: UIAction, params: dict[str, Any]) -> list[str]:
             prefix_text,
             "--return-batch-size",
             str(1000 if return_batch_size is None else return_batch_size),
+        ]
+    if action.command == "run-layer-neurons":
+        use_prefix_context = params.get("use_prefix_context")
+        use_prefix_context_flag = bool(use_prefix_context) if use_prefix_context is not None else False
+        prefix_text = str(params.get("prefix_text") or "The apple is red.")
+        layer_neuron_list_json = str(params.get("layer_neuron_list_json") or "")
+        selected_list_name = str(params.get("selected_list_name") or "")
+        return [
+            action.command,
+            "--use-prefix-context",
+            "true" if use_prefix_context_flag else "false",
+            "--prefix-text",
+            prefix_text,
+            "--selected-list-name",
+            selected_list_name,
+            "--layer-neuron-list-json",
+            layer_neuron_list_json,
         ]
     if action.command == "run-layer-ffn-neuron-logits-table":
         intervention_layer = params.get("intervention_layer")

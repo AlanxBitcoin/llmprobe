@@ -21,6 +21,7 @@ from .routes import (
     execute_chat_completion,
     execute_ui_action,
     get_ui_action_task,
+    layer_neurons_list_payload,
     list_ffn_neuron_history,
     load_latest_ffn_neuron_history_result,
     load_ffn_neuron_history_result,
@@ -85,6 +86,12 @@ def _run_fastapi_server(project_root: Path, config_path: Path, *, host: str, por
     async def api_batches():
         return JSONResponse(batch_options_payload(project_root))
 
+    @app.get("/api/layer-neurons/list-json")
+    async def api_layer_neurons_list_json():
+        payload = layer_neurons_list_payload(project_root)
+        status = 200 if payload.get("status") == "ok" else 500
+        return JSONResponse(payload, status_code=status)
+
     @app.get("/api/history/layer-ffn-neuron/latest")
     async def api_history_ffn_latest():
         result = load_latest_ffn_neuron_history_result(project_root)
@@ -106,7 +113,7 @@ def _run_fastapi_server(project_root: Path, config_path: Path, *, host: str, por
         payload = payload or {}
         action_id = str(payload.get("action_id") or "")
         params = payload.get("params") or {}
-        if action_id in {"study_layer_neuron_logits_table", "study_layer_ffn_neuron_logits_table"}:
+        if action_id in {"study_layer_neuron_logits_table", "study_layer_ffn_neuron_logits_table", "study_layer_neurons"}:
             result = start_ui_action_task(
                 action_id=action_id,
                 params=params,
@@ -236,6 +243,10 @@ def _make_handler(project_root: Path, config_path: Path) -> type[BaseHTTPRequest
             if path == "/api/batches":
                 self._send_json(batch_options_payload(project_root))
                 return
+            if path == "/api/layer-neurons/list-json":
+                payload = layer_neurons_list_payload(project_root)
+                self._send_json(payload, status=200 if payload.get("status") == "ok" else 500)
+                return
             if path == "/api/history/layer-ffn-neuron/latest":
                 result = load_latest_ffn_neuron_history_result(project_root)
                 self._send_json(result, status=200 if result.get("status") == "ok" else 404)
@@ -312,7 +323,7 @@ def _make_handler(project_root: Path, config_path: Path) -> type[BaseHTTPRequest
                 else:
                     action_id = str(payload.get("action_id") or "")
                     params = payload.get("params") or {}
-                    if action_id in {"study_layer_neuron_logits_table", "study_layer_ffn_neuron_logits_table"}:
+                    if action_id in {"study_layer_neuron_logits_table", "study_layer_ffn_neuron_logits_table", "study_layer_neurons"}:
                         result = start_ui_action_task(
                             action_id=action_id,
                             params=params,

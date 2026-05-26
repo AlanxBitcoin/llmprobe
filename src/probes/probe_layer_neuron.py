@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
+import numpy as np
 import torch
 import torch.nn.functional as F
 
@@ -270,6 +271,50 @@ def run_layer_neuron_batch_to_logits_probe(
         return rows, None
     except Exception as exc:  # noqa: BLE001
         return None, str(exc)
+
+
+def run_layer_neurons_once_to_logits_probe(
+    *,
+    bundle,
+    config: dict[str, Any],
+    start_layer_idx: int,
+    input_ids: torch.Tensor,
+    hidden_state: torch.Tensor,
+    top_k: int = 15,
+    include_cosine: bool = False,
+) -> tuple[list[dict[str, Any]] | None, np.ndarray | None, str | None]:
+    try:
+        transit, transit_error = run_starting_from_middle_layer_probe(
+            word=None,
+            config=config,
+            start_layer_idx=int(start_layer_idx),
+            hidden_state=hidden_state,
+            input_ids_override=input_ids,
+            bundle_override=bundle,
+        )
+        if transit is None:
+            return None, None, str(transit_error or "starting_from_middle_layer failed")
+        outputs = transit["result"]["outputs"]
+        hidden_states = getattr(outputs, "hidden_states", None)
+        if not hidden_states:
+            return None, None, "missing_hidden_states"
+        final_vec = hidden_states[-1][0, -1, :].detach()
+        # collected from start layer output to final normalized output
+        matrix_from_start = np.asarray(
+            [h[0, -1, :].detach().float().cpu().numpy() for h in hidden_states],
+            dtype=np.float32,
+        )
+        rows = rank_vector_logits_and_cosine(
+            model=bundle.model,
+            vector=final_vec,
+            tokenizer=bundle.tokenizer,
+            top_k=int(top_k),
+            apply_final_norm=False,
+            include_cosine=bool(include_cosine),
+        )
+        return rows, matrix_from_start, None
+    except Exception as exc:  # noqa: BLE001
+        return None, None, str(exc)
 
 
 def _rank_hidden_batch_logits_and_cosine(

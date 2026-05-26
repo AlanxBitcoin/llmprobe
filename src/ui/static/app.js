@@ -3,6 +3,7 @@ let selectedAction = null;
 let lastResult = null;
 let heatmapThreshold = 2.0;
 let busyCountdownTimer = null;
+const actionParamsCache = new Map();
 
 const actionsList = document.getElementById("actionsList");
 const paramsForm = document.getElementById("paramsForm");
@@ -148,6 +149,9 @@ function renderActions() {
 }
 
 function selectAction(actionId) {
+  if (selectedAction && selectedAction.id) {
+    actionParamsCache.set(selectedAction.id, collectParams());
+  }
   selectedAction = actions.find((action) => action.id === actionId);
   if (!selectedAction) return;
   document.querySelectorAll(".action-button").forEach((button) => {
@@ -155,7 +159,11 @@ function selectAction(actionId) {
   });
   actionTitle.textContent = selectedAction.label;
   actionDescription.textContent = selectedAction.description || "";
-  renderForm(selectedAction.fields || []);
+  const cachedParams = actionParamsCache.get(selectedAction.id) || null;
+  renderForm(selectedAction.fields || [], cachedParams);
+  if (selectedAction && selectedAction.id === "study_layer_neurons") {
+    loadLayerNeuronsJsonIntoTextbox();
+  }
   runButton.disabled = false;
   updateHistoryButtonVisibility();
   if (selectedAction && selectedAction.id === "study_layer_ffn_neuron_logits_table") {
@@ -165,7 +173,23 @@ function selectAction(actionId) {
   clearInlineParamResult();
 }
 
-function renderForm(fields) {
+async function loadLayerNeuronsJsonIntoTextbox() {
+  if (!selectedAction || selectedAction.id !== "study_layer_neurons") return;
+  const textArea = paramsForm.elements.namedItem("layer_neuron_list_json");
+  if (!textArea) return;
+  try {
+    const resp = await fetch("/api/layer-neurons/list-json");
+    const payload = await resp.json();
+    if (!payload || payload.status !== "ok") return;
+    textArea.value = String(payload.json_text || "");
+    updateLayerNeuronsListPicker();
+    updateCommandPreview();
+  } catch (_err) {
+    // Keep current textarea value if file-load fails.
+  }
+}
+
+function renderForm(fields, initialParams = null) {
   paramsForm.innerHTML = "";
   fields.forEach((field) => {
     const wrap = document.createElement("div");
@@ -181,25 +205,38 @@ function renderForm(fields) {
       wrap.appendChild(display);
     } else {
       const input = document.createElement("input");
-      input.name = field.name;
-      input.type = field.type || "text";
-      if (input.type === "checkbox") {
-        input.checked = field.default !== false;
+      if ((field.type || "text") === "textarea") {
+        const area = document.createElement("textarea");
+        area.name = field.name;
+        const hasCached = initialParams && Object.prototype.hasOwnProperty.call(initialParams, field.name);
+        area.value = hasCached ? String(initialParams[field.name] ?? "") : (field.default ?? "");
+        area.rows = Number(field.rows || 10);
+        if (field.required) area.required = true;
+        area.addEventListener("input", updateCommandPreview);
+        wrap.appendChild(area);
       } else {
-        input.value = field.default ?? "";
+        input.name = field.name;
+        input.type = field.type || "text";
+        const hasCached = initialParams && Object.prototype.hasOwnProperty.call(initialParams, field.name);
+        if (input.type === "checkbox") {
+          input.checked = hasCached ? Boolean(initialParams[field.name]) : (field.default !== false);
+        } else {
+          input.value = hasCached ? String(initialParams[field.name] ?? "") : (field.default ?? "");
+        }
+        if (field.min !== undefined) input.min = field.min;
+        if (field.max !== undefined) input.max = field.max;
+        if (field.step !== undefined) input.step = field.step;
+        if (field.required) input.required = true;
+        input.addEventListener(input.type === "checkbox" ? "change" : "input", updateCommandPreview);
+        wrap.appendChild(input);
       }
-      if (field.min !== undefined) input.min = field.min;
-      if (field.max !== undefined) input.max = field.max;
-      if (field.step !== undefined) input.step = field.step;
-      if (field.required) input.required = true;
-      input.addEventListener(input.type === "checkbox" ? "change" : "input", updateCommandPreview);
-      wrap.appendChild(input);
     }
     paramsForm.appendChild(wrap);
   });
   updateBosAssistantVisibility();
   updatePrefixContextVisibility();
   updateBatchNameDropdown();
+  updateLayerNeuronsListPicker();
 }
 
 function collectParams() {
@@ -235,6 +272,7 @@ function updateCommandPreview() {
   updateBosAssistantVisibility();
   updatePrefixContextVisibility();
   updateBatchNameDropdownVisibility();
+  updateLayerNeuronsListPickerVisibility();
   updateHistoryButtonVisibility();
   if (!selectedAction) {
     commandPreview.textContent = "";
@@ -374,6 +412,85 @@ async function updateBatchNameDropdown() {
     updateCommandPreview();
   });
   updateBatchNameDropdownVisibility();
+}
+
+function extractLayerNeuronListNames(raw) {
+  try {
+    const payload = JSON.parse(String(raw || "").trim() || "{}");
+    let lists = [];
+    if (Array.isArray(payload)) {
+      lists = payload;
+    } else if (payload && Array.isArray(payload.lists)) {
+      lists = payload.lists;
+    } else if (payload && typeof payload === "object") {
+      lists = [payload];
+    }
+    return lists
+      .map((x) => (x && typeof x.list_name === "string" ? String(x.list_name).trim() : ""))
+      .filter((x) => x.length > 0);
+  } catch (_err) {
+    return [];
+  }
+}
+
+function updateLayerNeuronsListPickerVisibility() {
+  const picker = paramsForm.querySelector("select[name='selected_list_name_picker']");
+  const selectedInput = paramsForm.elements.namedItem("selected_list_name");
+  if (!picker || !selectedInput) return;
+  const wrap = picker.closest(".field-inline");
+  if (!wrap) return;
+  wrap.style.display = selectedAction && selectedAction.id === "study_layer_neurons" ? "" : "none";
+}
+
+function refreshLayerNeuronsListPickerOptions(picker, jsonInput, selectedInput) {
+  const names = extractLayerNeuronListNames(jsonInput.value);
+  picker.innerHTML = "";
+  const placeholder = document.createElement("option");
+  placeholder.value = "";
+  placeholder.textContent = names.length > 0 ? "Choose list_name" : "No valid list_name";
+  picker.appendChild(placeholder);
+  names.forEach((name) => {
+    const opt = document.createElement("option");
+    opt.value = name;
+    opt.textContent = name;
+    picker.appendChild(opt);
+  });
+  const current = String((selectedInput.value || "").trim());
+  if (current && names.includes(current)) {
+    picker.value = current;
+  } else if (!current && names.length === 1) {
+    picker.value = names[0];
+    selectedInput.value = names[0];
+  } else {
+    picker.value = "";
+  }
+}
+
+function updateLayerNeuronsListPicker() {
+  if (!selectedAction || selectedAction.id !== "study_layer_neurons") return;
+  const selectedInput = paramsForm.elements.namedItem("selected_list_name");
+  const jsonInput = paramsForm.elements.namedItem("layer_neuron_list_json");
+  const selectedField = paramsForm.querySelector(".field[data-field-name='selected_list_name']");
+  if (!selectedInput || !jsonInput || !selectedField) return;
+  let picker = selectedField.querySelector("select[name='selected_list_name_picker']");
+  if (!picker) {
+    const inline = document.createElement("div");
+    inline.className = "field-inline";
+    picker = document.createElement("select");
+    picker.name = "selected_list_name_picker";
+    inline.appendChild(picker);
+    selectedField.appendChild(inline);
+    picker.addEventListener("change", () => {
+      selectedInput.value = String(picker.value || "");
+      updateCommandPreview();
+    });
+    jsonInput.addEventListener("input", () => {
+      refreshLayerNeuronsListPickerOptions(picker, jsonInput, selectedInput);
+      updateCommandPreview();
+    });
+  }
+  refreshLayerNeuronsListPickerOptions(picker, jsonInput, selectedInput);
+  updateLayerNeuronsListPickerVisibility();
 }
 
 async function runSelectedAction() {
@@ -815,15 +932,29 @@ function renderOneHeatmapIntoDoc(doc, container, matrix, titleText, syncGroup) {
   const cols = Number(rows > 0 && Array.isArray(matrix[0]) ? matrix[0].length : 0);
   if (!rows || !cols) return;
 
+  const header = doc.createElement("div");
+  header.style.display = "flex";
+  header.style.alignItems = "center";
+  header.style.gap = "8px";
+  const toggleBtn = doc.createElement("button");
+  toggleBtn.type = "button";
+  toggleBtn.textContent = "Hide";
+  toggleBtn.title = "Hide / Show this heatmap";
+  header.appendChild(toggleBtn);
   const title = doc.createElement("h4");
+  title.style.margin = "0";
   title.textContent = String(titleText || "Heatmap");
-  container.appendChild(title);
+  header.appendChild(title);
+  container.appendChild(header);
+
+  const body = doc.createElement("div");
+  container.appendChild(body);
 
   const cell = 10;
   const hoverMeta = doc.createElement("div");
   hoverMeta.className = "muted";
   hoverMeta.textContent = "Hover: X=-, Y=-";
-  container.appendChild(hoverMeta);
+  body.appendChild(hoverMeta);
 
   const controls = doc.createElement("div");
   controls.className = "muted";
@@ -840,16 +971,39 @@ function renderOneHeatmapIntoDoc(doc, container, matrix, titleText, syncGroup) {
   controls.appendChild(thresholdLabel);
   controls.appendChild(thresholdSlider);
   controls.appendChild(thresholdValue);
-  container.appendChild(controls);
+  body.appendChild(controls);
 
   const wrap = doc.createElement("div");
   wrap.className = "scroll";
+  const stage = doc.createElement("div");
+  stage.style.position = "relative";
+  stage.style.width = `${cols * cell}px`;
+  stage.style.height = `${rows * cell}px`;
   const canvas = doc.createElement("canvas");
   canvas.width = cols * cell;
   canvas.height = rows * cell;
-  canvas.style.cursor = "crosshair";
-  wrap.appendChild(canvas);
-  container.appendChild(wrap);
+  canvas.style.position = "absolute";
+  canvas.style.left = "0";
+  canvas.style.top = "0";
+  canvas.style.zIndex = "1";
+  const guideCanvas = doc.createElement("canvas");
+  guideCanvas.width = cols * cell;
+  guideCanvas.height = rows * cell;
+  guideCanvas.style.position = "absolute";
+  guideCanvas.style.left = "0";
+  guideCanvas.style.top = "0";
+  guideCanvas.style.zIndex = "2";
+  guideCanvas.style.cursor = "crosshair";
+  stage.appendChild(canvas);
+  stage.appendChild(guideCanvas);
+  wrap.appendChild(stage);
+  body.appendChild(wrap);
+
+  toggleBtn.addEventListener("click", () => {
+    const hidden = body.style.display === "none";
+    body.style.display = hidden ? "" : "none";
+    toggleBtn.textContent = hidden ? "Hide" : "Show";
+  });
 
   if (syncGroup && Array.isArray(syncGroup.wraps)) {
     syncGroup.wraps.push(wrap);
@@ -870,7 +1024,8 @@ function renderOneHeatmapIntoDoc(doc, container, matrix, titleText, syncGroup) {
     });
   }
   const ctx = canvas.getContext("2d");
-  if (!ctx) return;
+  const guideCtx = guideCanvas.getContext("2d");
+  if (!ctx || !guideCtx) return;
 
   function drawWithThreshold(threshold) {
     for (let r = 0; r < rows; r += 1) {
@@ -884,31 +1039,37 @@ function renderOneHeatmapIntoDoc(doc, container, matrix, titleText, syncGroup) {
   }
 
   function drawHoverGuide(x, y) {
+    guideCtx.clearRect(0, 0, guideCanvas.width, guideCanvas.height);
     if (!Number.isFinite(x) || !Number.isFinite(y)) return;
     if (x < 0 || x >= cols || y < 0 || y >= rows) return;
-    const vx = x * cell + 0.5;
-    const hy = y * cell + 0.5;
-    ctx.save();
-    ctx.strokeStyle = "rgba(255,255,255,0.85)";
-    ctx.lineWidth = 1;
-    ctx.setLineDash([5, 4]);
+    const vx = x * cell + (cell / 2);
+    const hy = y * cell + (cell / 2);
+    guideCtx.save();
+    guideCtx.strokeStyle = "rgba(255,255,255,0.85)";
+    guideCtx.lineWidth = 1;
+    guideCtx.setLineDash([5, 4]);
     // Vertical dashed line (requested), plus horizontal for easier read.
-    ctx.beginPath();
-    ctx.moveTo(vx, 0);
-    ctx.lineTo(vx, canvas.height);
-    ctx.stroke();
-    ctx.beginPath();
-    ctx.moveTo(0, hy);
-    ctx.lineTo(canvas.width, hy);
-    ctx.stroke();
-    ctx.restore();
+    guideCtx.beginPath();
+    guideCtx.moveTo(vx, 0);
+    guideCtx.lineTo(vx, canvas.height);
+    guideCtx.stroke();
+    guideCtx.beginPath();
+    guideCtx.moveTo(0, hy);
+    guideCtx.lineTo(canvas.width, hy);
+    guideCtx.stroke();
+    guideCtx.restore();
   }
 
-  function redraw() {
+  function redrawBase() {
     drawWithThreshold(heatmapThreshold);
+  }
+
+  function redrawGuide() {
     if (syncGroup && syncGroup.hover) {
       drawHoverGuide(Number(syncGroup.hover.x), Number(syncGroup.hover.y));
+      return;
     }
+    drawHoverGuide(NaN, NaN);
   }
 
   function setHoverText(x, y) {
@@ -929,7 +1090,7 @@ function renderOneHeatmapIntoDoc(doc, container, matrix, titleText, syncGroup) {
         (syncGroup.heatmaps || []).forEach((item) => {
           if (!item) return;
           item.setHoverText(Number(x), Number(y));
-          item.redraw();
+          item.redrawGuide();
         });
       };
     }
@@ -939,23 +1100,24 @@ function renderOneHeatmapIntoDoc(doc, container, matrix, titleText, syncGroup) {
         (syncGroup.heatmaps || []).forEach((item) => {
           if (!item) return;
           item.setHoverText(NaN, NaN);
-          item.redraw();
+          item.redrawGuide();
         });
       };
     }
-    syncGroup.heatmaps.push({ redraw, setHoverText });
+    syncGroup.heatmaps.push({ redrawBase, redrawGuide, setHoverText });
   }
 
   thresholdSlider.addEventListener("input", () => {
     heatmapThreshold = Number(thresholdSlider.value);
     thresholdValue.textContent = heatmapThreshold.toFixed(2);
-    redraw();
+    redrawBase();
+    redrawGuide();
   });
 
-  canvas.addEventListener("mousemove", (event) => {
-    const rect = canvas.getBoundingClientRect();
-    const sx = rect.width > 0 ? (canvas.width / rect.width) : 1;
-    const sy = rect.height > 0 ? (canvas.height / rect.height) : 1;
+  guideCanvas.addEventListener("mousemove", (event) => {
+    const rect = guideCanvas.getBoundingClientRect();
+    const sx = rect.width > 0 ? (guideCanvas.width / rect.width) : 1;
+    const sy = rect.height > 0 ? (guideCanvas.height / rect.height) : 1;
     const x = Math.floor(((event.clientX - rect.left) * sx) / cell);
     const y = Math.floor(((event.clientY - rect.top) * sy) / cell);
     if (syncGroup && typeof syncGroup.setHover === "function") {
@@ -963,16 +1125,19 @@ function renderOneHeatmapIntoDoc(doc, container, matrix, titleText, syncGroup) {
       return;
     }
     setHoverText(x, y);
+    drawHoverGuide(x, y);
   });
-  canvas.addEventListener("mouseleave", () => {
+  guideCanvas.addEventListener("mouseleave", () => {
     if (syncGroup && typeof syncGroup.clearHover === "function") {
       syncGroup.clearHover();
       return;
     }
     setHoverText(NaN, NaN);
+    drawHoverGuide(NaN, NaN);
   });
 
-  redraw();
+  redrawBase();
+  redrawGuide();
 }
 
 function renderTopLogitsTableIntoDoc(doc, container, rows, heatmap, titleText, sourceKey, errorKey) {

@@ -51,6 +51,7 @@ from src.study import (
     run_attribute_probe_study,
     run_layer_ffn_neuron_logits_table_study,
     run_layer_neuron_logits_table_study,
+    run_layer_neurons_study,
     run_linear_probe_study,
     run_sentence_next_word_study,
     run_single_word_hidden_state_study,
@@ -213,6 +214,35 @@ def build_parser() -> argparse.ArgumentParser:
         help="Prefix sentence to run before intervention when --use-prefix-context=true.",
     )
     ffn_neuron_scan.add_argument("--return-batch-size", type=int, default=1000, help="Rows per batch in returned payload (default: 1000)")
+
+    layer_neurons = subparsers.add_parser(
+        "run-layer-neurons",
+        help="Apply multiple neuron overrides from JSON once and return heatmap + top-15 logits.",
+    )
+    layer_neurons.add_argument(
+        "--use-prefix-context",
+        type=_parse_bool_flag,
+        default=False,
+        help="If true, run prefix text first and apply multi-neuron override on that layer hidden state.",
+    )
+    layer_neurons.add_argument(
+        "--prefix-text",
+        type=str,
+        default="The apple is red.",
+        help="Prefix sentence used when --use-prefix-context=true.",
+    )
+    layer_neurons.add_argument(
+        "--selected-list-name",
+        type=str,
+        default="",
+        help="Select one list_name when JSON contains multiple lists.",
+    )
+    layer_neurons.add_argument(
+        "--layer-neuron-list-json",
+        type=str,
+        default="",
+        help="JSON payload: {list_name,nLayer,neurons:[{nNeuron,value}]}",
+    )
 
     combo = subparsers.add_parser("run-word-sum", help="Analyze the layer-8 summed representation of two or more words")
     combo.add_argument("words", nargs="+", help="Two or more bare English words")
@@ -419,6 +449,17 @@ def _execute_parsed_args(args: argparse.Namespace, config: dict[str, Any]) -> di
             use_prefix_context=bool(args.use_prefix_context),
             prefix_text=str(args.prefix_text or ""),
             return_batch_size=int(args.return_batch_size),
+            config=config,
+            config_path=args.config,
+        )
+        return {"hidden_state_heatmap": heatmap}
+
+    if args.command == "run-layer-neurons":
+        heatmap = run_layer_neurons_study(
+            layer_neuron_list_json=str(args.layer_neuron_list_json or ""),
+            selected_list_name=str(args.selected_list_name or ""),
+            use_prefix_context=bool(args.use_prefix_context),
+            prefix_text=str(args.prefix_text or ""),
             config=config,
             config_path=args.config,
         )

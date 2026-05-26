@@ -22,6 +22,8 @@ from src.main import run_cli_command
 from src.config import load_config
 from src.runtime_api import RuntimeRequest, get_runtime_api, start_llama_api
 import torch
+from src.utils.layer_neurons_list_file import ensure_layer_neurons_list_file
+from src.utils.layer_neurons_list_file import load_layer_neurons_list_text
 
 from .registry import build_command_args, get_ui_action, list_ui_actions
 from .result_render import collect_recent_artifacts, newest_csv_preview
@@ -81,8 +83,30 @@ def batch_options_payload(project_root: str | Path) -> dict[str, Any]:
     return {"batches": items}
 
 
+def layer_neurons_list_payload(project_root: str | Path) -> dict[str, Any]:
+    try:
+        path, text = load_layer_neurons_list_text(project_root)
+        return {"status": "ok", "path": str(path), "json_text": text}
+    except Exception as exc:  # noqa: BLE001
+        return {"status": "error", "error": str(exc), "json_text": ""}
+
+
 def actions_payload() -> dict[str, Any]:
     return {"actions": list_ui_actions()}
+
+
+def _prevalidate_and_save_layer_neurons_json(project_root: Path, params: dict[str, Any]) -> str | None:
+    raw = str((params or {}).get("layer_neuron_list_json") or "").strip()
+    if not raw:
+        return "layer_neuron_list_json_required"
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        return f"invalid_json:{exc.msg}"
+    # Format is valid: save immediately (normalized pretty JSON).
+    target = ensure_layer_neurons_list_file(project_root)
+    target.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    return None
 
 
 def _ffn_history_dir(project_root: str | Path) -> Path:
@@ -625,6 +649,32 @@ def execute_ui_action(
     params = params or {}
     root = Path(project_root).resolve()
     action = get_ui_action(action_id)
+    if action.command == "run-layer-neurons":
+        pre_err = _prevalidate_and_save_layer_neurons_json(root, params)
+        if pre_err:
+            return {
+                "status": "error",
+                "action": action.to_dict(),
+                "command": ["inprocess", "src.main", "--config", str(config_path), action.command],
+                "return_code": None,
+                "stdout": "",
+                "stderr": pre_err,
+                "artifacts": [],
+                "csv_preview": None,
+                "hidden_state_heatmap": {
+                    "ok": False,
+                    "reason": pre_err,
+                    "matrix": [],
+                    "heatmaps": [],
+                    "top_logits": [],
+                    "ui_tasks": [
+                        {"name": "render_heatmap", "value_key": "heatmaps"},
+                        {"name": "render_logits", "value_key": "top_logits"},
+                    ],
+                },
+                "started_at": time.time(),
+                "finished_at": time.time(),
+            }
     if action.command == "run-single-word-hidden-state-batch-average":
         upsert_batch_mapping(
             root,
@@ -680,6 +730,7 @@ def execute_ui_action(
             "run-sentence-next-word",
             "run-token-diff",
             "run-single-word-top-100-neurons",
+            "run-layer-neurons",
             "run-layer-ffn-neuron-logits-table",
         }:
             artifacts = []
@@ -735,6 +786,20 @@ def start_ui_action_task(
     params = params or {}
     root = Path(project_root).resolve()
     action = get_ui_action(action_id)
+    if action.command == "run-layer-neurons":
+        pre_err = _prevalidate_and_save_layer_neurons_json(root, params)
+        if pre_err:
+            return {
+                "status": "error",
+                "action": action.to_dict(),
+                "command": ["inprocess", "src.main", "--config", str(config_path), action.command],
+                "task_id": None,
+                "return_code": None,
+                "stdout": "",
+                "stderr": pre_err,
+                "started_at": started_at,
+                "finished_at": time.time(),
+            }
     command_args = build_command_args(action, params)
     cmd = ["inprocess", "src.main", "--config", str(config_path), *command_args]
     started_at = time.time()
@@ -796,6 +861,7 @@ def start_ui_action_task(
                 "run-sentence-next-word",
                 "run-token-diff",
                 "run-single-word-top-100-neurons",
+                "run-layer-neurons",
                 "run-layer-neuron-logits-table",
                 "run-layer-ffn-neuron-logits-table",
             }:

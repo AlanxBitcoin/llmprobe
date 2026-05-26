@@ -53,6 +53,25 @@ FORM_SCHEMAS: dict[str, list[dict[str, Any]]] = {
         {"name": "prefix_text", "label": "Prefix Sentence", "type": "text", "default": "The apple is red.", "required": False},
         {"name": "return_batch_size", "label": "Return Batch Size", "type": "number", "default": 1000, "min": 1},
     ],
+    "layer_neurons_logits_table_form": [
+        {"name": "use_prefix_context", "label": "Use Prefix Context", "type": "checkbox", "default": False},
+        {"name": "prefix_text", "label": "Prefix Sentence", "type": "text", "default": "The apple is red.", "required": False},
+        {
+            "name": "selected_list_name",
+            "label": "Selected List Name",
+            "type": "text",
+            "default": "",
+            "required": False,
+        },
+        {
+            "name": "layer_neuron_list_json",
+            "label": "Layer Neuron List JSON",
+            "type": "textarea",
+            "default": "{\n  \"lists\": [\n    {\n      \"list_name\": \"example_a\",\n      \"nLayer\": 30,\n      \"neurons\": [\n        {\"nNeuron\": 45, \"value\": 20.0},\n        {\"nNeuron\": 1024, \"value\": -5.0}\n      ]\n    },\n    {\n      \"list_name\": \"example_b\",\n      \"nLayer\": 31,\n      \"neurons\": [\n        {\"nNeuron\": 300, \"value\": 8.0}\n      ]\n    }\n  ]\n}",
+            "required": True,
+            "rows": 12,
+        },
+    ],
     "layer_ffn_neuron_logits_table_form": [
         {"name": "intervention_layer", "label": "Layer", "type": "number", "default": 30, "min": 1, "step": 1},
         {"name": "activation_value", "label": "Activation Value", "type": "number", "default": 10.0},
