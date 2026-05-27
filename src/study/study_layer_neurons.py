@@ -16,6 +16,7 @@ import torch
 from ..config import load_config
 from ..probes.probe_hidden_state import (
     fetch_sentence_last_token_hidden_state,
+    get_or_build_random_token_prefix_attention_baseline_matrix,
     get_or_build_random_token_mean_matrix,
 )
 from ..probes.probe_layer_neuron import run_layer_neurons_once_to_logits_probe
@@ -30,12 +31,21 @@ def _get_or_start_runtime_api(config: dict[str, Any]):
         return start_llama_api(config)
 
 
-def _validate_one_entry(item: Any, *, num_layers: int, hidden_dim: int, tag: str) -> tuple[dict[str, Any] | None, str | None]:
+def _validate_one_entry(
+    item: Any,
+    *,
+    num_layers: int,
+    hidden_dim: int,
+    tag: str,
+    default_list_name: str,
+) -> tuple[dict[str, Any] | None, str | None]:
     if not isinstance(item, dict):
         return None, f"invalid_json_field:{tag}_must_be_object"
     list_name = item.get("list_name")
+    if list_name is None or str(list_name).strip() == "":
+        list_name = str(default_list_name)
     if not isinstance(list_name, str) or not str(list_name).strip():
-        return None, f"invalid_json_field:{tag}.list_name_must_be_nonempty_string"
+        return None, f"invalid_json_field:{tag}.list_name_invalid"
     n_layer = item.get("nLayer")
     if not isinstance(n_layer, int):
         return None, f"invalid_json_field:{tag}.nLayer_must_be_integer"
@@ -46,13 +56,43 @@ def _validate_one_entry(item: Any, *, num_layers: int, hidden_dim: int, tag: str
         return None, f"invalid_json_field:{tag}.neurons_must_be_array"
     clean: list[dict[str, Any]] = []
     for idx, n in enumerate(neurons):
-        if not isinstance(n, dict):
-            return None, f"invalid_json_field:{tag}.neurons[{idx}]_must_be_object"
-        n_neuron = n.get("nNeuron")
-        value = n.get("value")
-        if not isinstance(n_neuron, int):
+        n_neuron: Any = None
+        value: Any = None
+        # Support both formats:
+        # 1) object: {"nNeuron": 45, "value": 20.0}
+        # 2) compact pair: [45, 20.0]
+        if isinstance(n, dict):
+            if "nNeuron" in n or "value" in n:
+                n_neuron = n.get("nNeuron")
+                value = n.get("value")
+            elif "neuron" in n or "v" in n or "n" in n:
+                n_neuron = n.get("neuron", n.get("n"))
+                value = n.get("value", n.get("v"))
+            elif len(n) == 1:
+                # Support compact object form: {"23": 1.0}
+                key, val = next(iter(n.items()))
+                n_neuron = key
+                value = val
+            else:
+                return None, f"invalid_json_field:{tag}.neurons[{idx}]_object_missing_neuron_or_value"
+        elif isinstance(n, (list, tuple)) and len(n) == 2:
+            n_neuron, value = n[0], n[1]
+        elif isinstance(n, str) and "," in n:
+            # Support compact string form: "23,1.0"
+            parts = [p.strip() for p in n.split(",", 1)]
+            n_neuron, value = parts[0], parts[1]
+        else:
+            return None, f"invalid_json_field:{tag}.neurons[{idx}]_must_be_object_or_pair"
+        # neuron id must be an integer (not float-ish like 3603.2)
+        if isinstance(n_neuron, float) and not float(n_neuron).is_integer():
             return None, f"invalid_json_field:{tag}.neurons[{idx}].nNeuron_must_be_integer"
-        if not isinstance(value, (int, float)):
+        try:
+            n_neuron = int(n_neuron)
+        except (TypeError, ValueError):
+            return None, f"invalid_json_field:{tag}.neurons[{idx}].nNeuron_must_be_integer"
+        try:
+            value = float(value)
+        except (TypeError, ValueError):
             return None, f"invalid_json_field:{tag}.neurons[{idx}].value_must_be_number"
         if not (0 <= int(n_neuron) < int(hidden_dim)):
             return None, f"invalid_json_field:{tag}.neurons[{idx}].nNeuron_out_of_range_valid_0_to_{int(hidden_dim)-1}"
@@ -88,7 +128,13 @@ def _parse_and_select_list_json(
 
     clean_lists: list[dict[str, Any]] = []
     for idx, item in enumerate(raw_lists):
-        clean, err = _validate_one_entry(item, num_layers=num_layers, hidden_dim=hidden_dim, tag=f"lists[{idx}]")
+        clean, err = _validate_one_entry(
+            item,
+            num_layers=num_layers,
+            hidden_dim=hidden_dim,
+            tag=f"lists[{idx}]",
+            default_list_name=f"list_{idx + 1}",
+        )
         if clean is None:
             return None, None, [], err
         clean_lists.append(clean)
@@ -119,6 +165,151 @@ def _protocol_flags(config: dict[str, Any]) -> tuple[bool, bool]:
     if protocol == "bos1_assistant1":
         return True, True
     return True, False
+
+
+def _build_no_prefix_context_input_ids(tokenizer, *, include_bos: bool, include_assistant: bool) -> list[int]:
+    # Build symbolic context sequence so continuation uses attention over BOS/chat markers.
+    if include_bos:
+        try:
+            chat = tokenizer.apply_chat_template(
+                [{"role": "user", "content": ""}],
+                tokenize=True,
+                add_generation_prompt=bool(include_assistant),
+            )
+            ids = chat.get("input_ids") if isinstance(chat, dict) else chat
+            if hasattr(ids, "tolist"):
+                ids = ids.tolist()
+            if isinstance(ids, list) and ids and isinstance(ids[0], list):
+                ids = ids[0]
+            ids = [int(x) for x in (ids or [])]
+            if ids:
+                return ids
+        except Exception:
+            pass
+    # Fallback: at least one token to keep shape valid.
+    bos_id = tokenizer.bos_token_id
+    if bos_id is not None:
+        return [int(bos_id)]
+    enc = tokenizer.encode("", add_special_tokens=True)
+    if enc:
+        return [int(enc[0])]
+    return []
+
+
+def _normalize_template_ids(payload: Any) -> list[int]:
+    ids = payload.get("input_ids") if isinstance(payload, dict) else payload
+    if ids is None:
+        return []
+    if hasattr(ids, "tolist"):
+        ids = ids.tolist()
+    if isinstance(ids, list) and ids and isinstance(ids[0], list):
+        ids = ids[0]
+    if not isinstance(ids, list):
+        return []
+    return [int(x) for x in ids]
+
+
+def _build_assistant_suffix_ids(tokenizer) -> list[int]:
+    """Build assistant generation-prompt suffix ids functionally via chat template."""
+    try:
+        with_prompt = tokenizer.apply_chat_template(
+            [{"role": "user", "content": ""}],
+            tokenize=True,
+            add_generation_prompt=True,
+        )
+        without_prompt = tokenizer.apply_chat_template(
+            [{"role": "user", "content": ""}],
+            tokenize=True,
+            add_generation_prompt=False,
+        )
+        with_ids = _normalize_template_ids(with_prompt)
+        without_ids = _normalize_template_ids(without_prompt)
+        if len(with_ids) > len(without_ids):
+            suffix = with_ids[len(without_ids) :]
+            return [int(x) for x in suffix]
+    except Exception:
+        pass
+
+    # Fallback: explicit assistant marker symbols as real tokens (not literal display prefix).
+    fallback_text = "<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\n"
+    ids = tokenizer(fallback_text, add_special_tokens=False).get("input_ids") or []
+    return [int(x) for x in ids]
+
+
+def _generate_with_one_time_layer_neurons_intervention(
+    *,
+    bundle,
+    input_ids: torch.Tensor,
+    layer_idx: int,
+    neurons: list[dict[str, Any]],
+    max_new_tokens: int = 256,
+) -> tuple[str | None, str | None]:
+    model = bundle.model
+    tokenizer = bundle.tokenizer
+    base_model = getattr(model, "model", None)
+    layers = getattr(base_model, "layers", None)
+    if layers is None:
+        layers = getattr(model, "layers", None)
+    if layers is None:
+        return None, "model_layers_not_found"
+    if not (0 <= int(layer_idx) < int(len(layers))):
+        return None, "layer_idx_out_of_range"
+
+    device = next(model.parameters()).device
+    target_layer = layers[int(layer_idx)]
+    base_prompt_len = int(input_ids.shape[1])
+    intervention_pos = max(0, base_prompt_len - 1)
+    run_input_ids = input_ids
+    assistant_suffix = _build_assistant_suffix_ids(tokenizer)
+    if assistant_suffix:
+        existing = [int(x) for x in input_ids[0].detach().cpu().tolist()]
+        if len(existing) < len(assistant_suffix) or existing[-len(assistant_suffix) :] != assistant_suffix:
+            appended = existing + [int(x) for x in assistant_suffix]
+            run_input_ids = torch.tensor([appended], dtype=torch.long, device=device)
+
+    state = {"applied": False}
+
+    def _one_time_prefill_hook(_module, _inputs, output):
+        if state["applied"]:
+            return output
+        if isinstance(output, torch.Tensor):
+            if int(output.shape[1]) >= base_prompt_len and int(output.shape[1]) > intervention_pos:
+                for item in neurons:
+                    output[:, intervention_pos, int(item["nNeuron"])] = float(item["value"])
+                state["applied"] = True
+            return output
+        if isinstance(output, tuple) and output:
+            first = output[0]
+            if isinstance(first, torch.Tensor) and int(first.shape[1]) >= base_prompt_len and int(first.shape[1]) > intervention_pos:
+                for item in neurons:
+                    first[:, intervention_pos, int(item["nNeuron"])] = float(item["value"])
+                state["applied"] = True
+                return (first, *output[1:])
+        return output
+
+    hook_handle = target_layer.register_forward_hook(_one_time_prefill_hook)
+    try:
+        eos_id = tokenizer.eos_token_id
+        pad_id = tokenizer.pad_token_id if tokenizer.pad_token_id is not None else eos_id
+        with torch.inference_mode():
+            out_ids = model.generate(
+                input_ids=run_input_ids.to(device=device, dtype=torch.long),
+                max_new_tokens=int(max(1, min(int(max_new_tokens), 256))),
+                do_sample=False,
+                use_cache=True,
+                pad_token_id=pad_id,
+                eos_token_id=eos_id,
+            )
+        prompt_len = int(run_input_ids.shape[1])
+        new_ids = out_ids[0, prompt_len:]
+        text = tokenizer.decode(new_ids, skip_special_tokens=True, clean_up_tokenization_spaces=False).strip()
+        if not text:
+            text = tokenizer.decode(new_ids, skip_special_tokens=False, clean_up_tokenization_spaces=False).strip()
+        return str(text), None
+    except Exception as exc:  # noqa: BLE001
+        return None, str(exc)
+    finally:
+        hook_handle.remove()
 
 
 def run_study(
@@ -182,6 +373,46 @@ def run_study(
     layer_number = int(parsed["nLayer"])
     layer_idx = int(layer_number - 1)
     neurons = list(parsed["neurons"])
+    include_bos, include_assistant = _protocol_flags(cfg)
+    random_ref = get_or_build_random_token_mean_matrix(
+        config=cfg,
+        include_bos=bool(include_bos),
+        include_assistant=bool(include_assistant),
+        sample_size=1000,
+        seed=20260526,
+    )
+    random_matrix = None
+    random_source = "error"
+    random_error = None
+    if isinstance(random_ref, dict) and random_ref.get("ok"):
+        candidate = np.asarray(random_ref.get("matrix"), dtype=np.float32)
+        if candidate.shape == (num_layers + 1, hidden_dim):
+            random_matrix = candidate
+            random_source = str(random_ref.get("cache_source") or "unknown")
+        else:
+            random_error = f"random_ref_shape_mismatch:{list(candidate.shape)} != {[num_layers + 1, hidden_dim]}"
+    else:
+        random_error = str((random_ref or {}).get("reason") if isinstance(random_ref, dict) else "unknown")
+
+    prefix_attn_ref = get_or_build_random_token_prefix_attention_baseline_matrix(
+        config=cfg,
+        include_bos=bool(include_bos),
+        include_assistant=bool(include_assistant),
+        sample_size=1000,
+        seed=20260526,
+    )
+    prefix_attn_matrix = None
+    prefix_attn_source = "error"
+    prefix_attn_error = None
+    if isinstance(prefix_attn_ref, dict) and prefix_attn_ref.get("ok"):
+        candidate = np.asarray(prefix_attn_ref.get("matrix"), dtype=np.float32)
+        if candidate.shape == (num_layers + 1, hidden_dim):
+            prefix_attn_matrix = candidate
+            prefix_attn_source = str(prefix_attn_ref.get("cache_source") or "unknown")
+        else:
+            prefix_attn_error = f"prefix_attn_shape_mismatch:{list(candidate.shape)} != {[num_layers + 1, hidden_dim]}"
+    else:
+        prefix_attn_error = str((prefix_attn_ref or {}).get("reason") if isinstance(prefix_attn_ref, dict) else "unknown")
 
     prefix_enabled = bool(use_prefix_context)
     prefix_token_count = 0
@@ -237,26 +468,43 @@ def run_study(
         input_ids = torch.tensor([input_ids_list], dtype=torch.long, device=device)
         prefix_token_count = int(len(prefix_ctx.get("prefix_token_ids") or []))
     else:
-        matrix_ref = np.zeros((num_layers + 1, hidden_dim), dtype=np.float32)
-        base_vector = torch.zeros((hidden_dim,), dtype=model_dtype, device=device)
-        bos_id = tokenizer.bos_token_id
-        if bos_id is None:
-            enc = tokenizer.encode("", add_special_tokens=True)
-            if not enc:
-                return {
-                    "ok": False,
-                    "reason": "bootstrap_token_unavailable",
-                    "list_file": str(list_file),
-                    "matrix": [],
-                    "heatmaps": [],
-                    "top_logits": [],
-                    "ui_tasks": [
-                        {"name": "render_heatmap", "value_key": "heatmaps"},
-                        {"name": "render_logits", "value_key": "top_logits"},
-                    ],
-                }
-            bos_id = int(enc[0])
-        input_ids = torch.tensor([[int(bos_id)]], dtype=torch.long, device=device)
+        if prefix_attn_matrix is None:
+            return {
+                "ok": False,
+                "reason": "prefix_attn_ref_unavailable_for_no_prefix",
+                "error": str(prefix_attn_error or "unknown"),
+                "list_file": str(list_file),
+                "matrix": [],
+                "heatmaps": [],
+                "top_logits": [],
+                "ui_tasks": [
+                    {"name": "render_heatmap", "value_key": "heatmaps"},
+                    {"name": "render_logits", "value_key": "top_logits"},
+                ],
+            }
+        # No-prefix mode baseline:
+        # start from zeros, then use 1000-token averaged prefix-symbol attention baseline.
+        matrix_ref = np.asarray(prefix_attn_matrix, dtype=np.float32).copy()
+        base_vector = torch.as_tensor(matrix_ref[layer_idx + 1], dtype=model_dtype, device=device).flatten()
+        context_ids = _build_no_prefix_context_input_ids(
+            tokenizer,
+            include_bos=bool(include_bos),
+            include_assistant=bool(include_assistant),
+        )
+        if not context_ids:
+            return {
+                "ok": False,
+                "reason": "bootstrap_token_unavailable",
+                "list_file": str(list_file),
+                "matrix": [],
+                "heatmaps": [],
+                "top_logits": [],
+                "ui_tasks": [
+                    {"name": "render_heatmap", "value_key": "heatmaps"},
+                    {"name": "render_logits", "value_key": "top_logits"},
+                ],
+            }
+        input_ids = torch.tensor([context_ids], dtype=torch.long, device=device)
 
     modified = base_vector.clone()
     for item in neurons:
@@ -286,9 +534,18 @@ def run_study(
             ],
         }
 
-    main_matrix = np.asarray(matrix_ref, dtype=np.float32).copy()
-    if main_matrix.shape != (num_layers + 1, hidden_dim):
-        main_matrix = np.zeros((num_layers + 1, hidden_dim), dtype=np.float32)
+    generated_text, generated_text_error = _generate_with_one_time_layer_neurons_intervention(
+        bundle=bundle,
+        input_ids=input_ids,
+        layer_idx=int(layer_idx),
+        neurons=neurons,
+        max_new_tokens=256,
+    )
+
+    original_matrix = np.asarray(matrix_ref, dtype=np.float32).copy()
+    if original_matrix.shape != (num_layers + 1, hidden_dim):
+        original_matrix = np.zeros((num_layers + 1, hidden_dim), dtype=np.float32)
+    main_matrix = np.asarray(original_matrix, dtype=np.float32).copy()
     main_matrix[layer_idx + 1, :] = modified.detach().float().cpu().numpy().astype(np.float32, copy=False)
     if matrix_from_start is not None:
         tail = np.asarray(matrix_from_start, dtype=np.float32)
@@ -298,34 +555,27 @@ def run_study(
         if copy_rows > 0:
             main_matrix[start_row : start_row + copy_rows, :] = tail[:copy_rows, :]
 
-    include_bos, include_assistant = _protocol_flags(cfg)
-    random_ref = get_or_build_random_token_mean_matrix(
-        config=cfg,
-        include_bos=bool(include_bos),
-        include_assistant=bool(include_assistant),
-        sample_size=1000,
-        seed=20260526,
-    )
-    random_matrix = None
     diff_matrix = None
-    random_source = "error"
-    random_error = None
-    if isinstance(random_ref, dict) and random_ref.get("ok"):
-        candidate = np.asarray(random_ref.get("matrix"), dtype=np.float32)
-        if candidate.shape == main_matrix.shape:
-            random_matrix = candidate
+    if random_matrix is not None:
+        if random_matrix.shape == main_matrix.shape:
             diff_matrix = main_matrix - random_matrix
-            random_source = str(random_ref.get("cache_source") or "unknown")
         else:
-            random_error = f"random_ref_shape_mismatch:{list(candidate.shape)} != {list(main_matrix.shape)}"
-    else:
-        random_error = str((random_ref or {}).get("reason") if isinstance(random_ref, dict) else "unknown")
+            random_error = f"random_ref_shape_mismatch:{list(random_matrix.shape)} != {list(main_matrix.shape)}"
 
     heatmaps = [
+        {"key": "original_hidden_state", "title": "Original Hidden State Heatmap", "matrix": original_matrix.tolist()},
         {"key": "layer_neurons", "title": "Layer Neurons Heatmap", "matrix": main_matrix.tolist()},
     ]
     if random_matrix is not None:
         heatmaps.append({"key": "random1000_mean", "title": "Random 1000 Tokens Mean Heatmap", "matrix": random_matrix.tolist()})
+    if prefix_attn_matrix is not None:
+        heatmaps.append(
+            {
+                "key": "random1000_prefix_attn_baseline",
+                "title": "Random 1000 Prefix-Attention Baseline Heatmap",
+                "matrix": prefix_attn_matrix.tolist(),
+            }
+        )
     if diff_matrix is not None:
         heatmaps.append({"key": "layer_neurons_minus_random1000", "title": "Layer Neurons - Random1000 Mean Heatmap", "matrix": diff_matrix.tolist()})
 
@@ -351,8 +601,14 @@ def run_study(
         "prefix_token_count": int(prefix_token_count),
         "random_ref_source": random_source,
         "random_ref_error": random_error,
+        "prefix_attn_ref_source": prefix_attn_source,
+        "prefix_attn_ref_error": prefix_attn_error,
+        "generated_text": str(generated_text or ""),
+        "generated_text_error": generated_text_error,
+        "generated_max_new_tokens": 256,
         "ui_tasks": [
             {"name": "render_heatmap", "value_key": "heatmaps"},
             {"name": "render_logits", "value_key": "top_logits"},
+            {"name": "render_text_output", "value_key": "generated_text"},
         ],
     }

@@ -317,11 +317,11 @@ def start_app(
         )
         ui_thread.start()
 
-        if should_init_hidden_store_disk:
-            _start_hidden_store_disk_init_background(effective_config)
-
         if should_start_llama:
             _start_llama_background(effective_config, preload_hidden=bool(hidden_store_cfg.get("preload_on_boot", True)))
+
+        if should_init_hidden_store_disk:
+            _start_hidden_store_disk_init_background(effective_config)
 
         # Keep process alive while still allowing Ctrl+C to stop the app cleanly.
         try:

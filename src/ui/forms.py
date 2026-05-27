@@ -67,7 +67,7 @@ FORM_SCHEMAS: dict[str, list[dict[str, Any]]] = {
             "name": "layer_neuron_list_json",
             "label": "Layer Neuron List JSON",
             "type": "textarea",
-            "default": "{\n  \"lists\": [\n    {\n      \"list_name\": \"example_a\",\n      \"nLayer\": 30,\n      \"neurons\": [\n        {\"nNeuron\": 45, \"value\": 20.0},\n        {\"nNeuron\": 1024, \"value\": -5.0}\n      ]\n    },\n    {\n      \"list_name\": \"example_b\",\n      \"nLayer\": 31,\n      \"neurons\": [\n        {\"nNeuron\": 300, \"value\": 8.0}\n      ]\n    }\n  ]\n}",
+            "default": "{\n  \"lists\": [\n    {\n      \"list_name\": \"example_a\",\n      \"nLayer\": 30,\n      \"neurons\": [\n        [45, 20.0],\n        [1024, -5.0]\n      ]\n    },\n    {\n      \"list_name\": \"example_b\",\n      \"nLayer\": 31,\n      \"neurons\": [\n        [300, 8.0]\n      ]\n    }\n  ]\n}",
             "required": True,
             "rows": 12,
         },

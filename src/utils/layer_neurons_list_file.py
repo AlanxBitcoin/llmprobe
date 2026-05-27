@@ -14,15 +14,15 @@ def default_layer_neurons_payload() -> dict:
                 "list_name": "example_a",
                 "nLayer": 30,
                 "neurons": [
-                    {"nNeuron": 45, "value": 20.0},
-                    {"nNeuron": 1024, "value": -5.0},
+                    [45, 20.0],
+                    [1024, -5.0],
                 ],
             },
             {
                 "list_name": "example_b",
                 "nLayer": 31,
                 "neurons": [
-                    {"nNeuron": 300, "value": 8.0},
+                    [300, 8.0],
                 ],
             },
         ]
@@ -49,4 +49,3 @@ def load_layer_neurons_list_text(project_root: str | Path) -> tuple[Path, str]:
     path = ensure_layer_neurons_list_file(project_root)
     text = path.read_text(encoding="utf-8")
     return path, text
-

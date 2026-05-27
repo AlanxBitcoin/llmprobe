@@ -338,3 +338,232 @@ def get_or_build_random_token_mean_matrix(
         }
     except Exception as exc:  # noqa: BLE001
         return {"ok": False, "reason": str(exc)}
+
+
+def _prefix_positions_for_single_token_input(input_ids: list[int], token_id: int) -> list[int]:
+    """Prefix positions before the first occurrence of target token in protocol input."""
+    target = int(token_id)
+    first = -1
+    for idx, value in enumerate(input_ids):
+        if int(value) == target:
+            first = int(idx)
+            break
+    if first <= 0:
+        return []
+    return list(range(0, first))
+
+
+def get_or_build_random_token_prefix_attention_baseline_matrix(
+    *,
+    config: dict[str, Any],
+    include_bos: bool,
+    include_assistant: bool,
+    sample_size: int = 1000,
+    seed: int = 20260526,
+) -> dict[str, Any]:
+    """Build/read cached baseline matrix driven by prefix-symbol attention.
+
+    Logic (for each sampled token):
+    - Build protocol input ids (BOS/chat symbols + token).
+    - For each decoder layer, take last-token attention to *prefix-symbol positions*.
+    - Use attention-weighted sum of that layer's input hidden states at prefix positions
+      as baseline contribution for row[layer+1].
+    - Average across sampled tokens.
+
+    Cache files:
+      - data/cache/random_token_prefix_attn_baseline.{protocol}.f32.bin
+      - data/cache/random_token_prefix_attn_baseline.{protocol}.meta.json
+    """
+    try:
+        api = _get_or_start_runtime_api(config)
+        bundle = api.execute_model_call(RuntimeRequest(config=config, force_reload=False)).bundle
+        model = bundle.model
+        tokenizer = bundle.tokenizer
+        protocol = protocol_from_flags(
+            bos=bool(include_bos),
+            assistant=bool(include_assistant) and bool(include_bos),
+        )
+
+        merged_cfg = dict(config or {})
+        hs_cfg = dict((merged_cfg.get("hidden_store") or {}))
+        hs_cfg["protocol"] = protocol
+        merged_cfg["hidden_store"] = hs_cfg
+        store_cfg = build_hidden_store_config(merged_cfg, bundle=bundle)
+
+        rows = int(store_cfg.n_layers)
+        cols = int(store_cfg.hidden_dim)
+        expected_count = rows * cols
+        target_n = int(max(1, sample_size))
+
+        cache_dir = store_cfg.data_file.parent
+        bin_path = cache_dir / f"random_token_prefix_attn_baseline.{protocol}.f32.bin"
+        meta_path = cache_dir / f"random_token_prefix_attn_baseline.{protocol}.meta.json"
+
+        if bin_path.exists() and meta_path.exists():
+            try:
+                meta = json.loads(meta_path.read_text(encoding="utf-8"))
+                raw = np.fromfile(bin_path, dtype=np.float32)
+                if raw.size == expected_count:
+                    matrix = raw.reshape(rows, cols)
+                    return {
+                        "ok": True,
+                        "cache_source": "bin",
+                        "protocol": protocol,
+                        "sample_size": int(meta.get("sample_size", target_n)),
+                        "seed": int(meta.get("seed", seed)),
+                        "matrix": matrix,
+                        "token_ids": [int(x) for x in (meta.get("token_ids") or [])],
+                        "bin_path": str(bin_path),
+                    }
+            except Exception:
+                pass
+
+        # Reuse random-token sample if already available.
+        mean_ref = get_or_build_random_token_mean_matrix(
+            config=config,
+            include_bos=bool(include_bos),
+            include_assistant=bool(include_assistant),
+            sample_size=target_n,
+            seed=int(seed),
+        )
+        picked: list[int] = []
+        if isinstance(mean_ref, dict) and mean_ref.get("ok"):
+            picked = [int(x) for x in (mean_ref.get("token_ids") or [])][:target_n]
+
+        if protocol == "bos0_assistant0":
+            matrix = np.zeros((rows, cols), dtype=np.float32)
+            cache_dir.mkdir(parents=True, exist_ok=True)
+            matrix.tofile(bin_path)
+            meta_path.write_text(
+                json.dumps(
+                    {
+                        "protocol": protocol,
+                        "sample_size": int(len(picked)),
+                        "seed": int(seed),
+                        "shape": [rows, cols],
+                        "dtype": "float32",
+                        "token_ids": [int(x) for x in picked],
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                ),
+                encoding="utf-8",
+            )
+            return {
+                "ok": True,
+                "cache_source": "computed",
+                "protocol": protocol,
+                "sample_size": int(len(picked)),
+                "seed": int(seed),
+                "matrix": matrix,
+                "token_ids": [int(x) for x in picked],
+                "bin_path": str(bin_path),
+            }
+
+        # Fallback sample if needed.
+        if len(picked) < target_n:
+            store = TokenHiddenStore(store_cfg, tokenizer)
+            rng = np.random.default_rng(int(seed))
+            all_ids = np.arange(int(store.token_count), dtype=np.int32)
+            rng.shuffle(all_ids)
+            seen = set(picked)
+
+            def _token_is_word_like(tok_id: int) -> bool:
+                token = str(tokenizer.convert_ids_to_tokens(int(tok_id)))
+                if not token:
+                    return False
+                if token.startswith("<|") and token.endswith("|>"):
+                    return False
+                text = str(tokenizer.decode([int(tok_id)], clean_up_tokenization_spaces=False))
+                if not text or not text.strip():
+                    return False
+                return True
+
+            for tok_id in all_ids.tolist():
+                tid = int(tok_id)
+                if tid in seen:
+                    continue
+                if not _token_is_word_like(tid):
+                    continue
+                picked.append(tid)
+                seen.add(tid)
+                if len(picked) >= target_n:
+                    break
+
+        if not picked:
+            return {"ok": False, "reason": "no_token_candidates"}
+
+        device = next(model.parameters()).device
+        model_cfg = getattr(model, "config", None)
+        prev_attn_impl = getattr(model_cfg, "_attn_implementation", None) if model_cfg is not None else None
+        if model_cfg is not None:
+            setattr(model_cfg, "_attn_implementation", "eager")
+
+        try:
+            sum_matrix = np.zeros((rows, cols), dtype=np.float64)
+            used = 0
+            for tid in picked:
+                input_ids = [int(x) for x in build_protocol_input_ids(tokenizer, protocol, [int(tid)])]
+                prefix_positions = _prefix_positions_for_single_token_input(input_ids, int(tid))
+                if not prefix_positions:
+                    continue
+                target_pos = len(input_ids) - 1
+
+                input_tensor = torch.tensor([input_ids], dtype=torch.long, device=device)
+                with torch.no_grad():
+                    outputs = model(
+                        input_ids=input_tensor,
+                        output_hidden_states=True,
+                        output_attentions=True,
+                        return_dict=True,
+                        use_cache=False,
+                    )
+
+                hidden_states = getattr(outputs, "hidden_states", None) or []
+                attentions = getattr(outputs, "attentions", None) or []
+                if not hidden_states or not attentions:
+                    continue
+
+                max_layers = min(len(attentions), rows - 1, len(hidden_states) - 1)
+                for l in range(max_layers):
+                    # attention of decoder layer l, last query token -> prefix positions
+                    attn = attentions[l][0, :, target_pos, prefix_positions].detach().float().cpu()
+                    w = attn.mean(dim=0)  # [P]
+                    hs = hidden_states[l][0, prefix_positions, :].detach().float().cpu()  # [P,H]
+                    vec = (w.unsqueeze(1) * hs).sum(dim=0).numpy().astype(np.float32)
+                    if vec.shape[0] == cols:
+                        sum_matrix[l + 1, :] += vec.astype(np.float64, copy=False)
+                used += 1
+
+            if used <= 0:
+                return {"ok": False, "reason": "no_valid_prefix_attention_samples"}
+            matrix = (sum_matrix / float(used)).astype(np.float32)
+        finally:
+            if model_cfg is not None:
+                setattr(model_cfg, "_attn_implementation", prev_attn_impl)
+
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        matrix.tofile(bin_path)
+        meta_payload = {
+            "protocol": protocol,
+            "sample_size": int(len(picked)),
+            "used_samples": int(used),
+            "seed": int(seed),
+            "shape": [rows, cols],
+            "dtype": "float32",
+            "token_ids": [int(x) for x in picked],
+        }
+        meta_path.write_text(json.dumps(meta_payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        return {
+            "ok": True,
+            "cache_source": "computed",
+            "protocol": protocol,
+            "sample_size": int(len(picked)),
+            "seed": int(seed),
+            "used_samples": int(used),
+            "matrix": matrix,
+            "token_ids": [int(x) for x in picked],
+            "bin_path": str(bin_path),
+        }
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "reason": str(exc)}

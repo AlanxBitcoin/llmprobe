@@ -44,6 +44,8 @@ _RUNTIME_LOCK = threading.RLock()
 def start_llama_api(config: dict[str, Any]) -> LlamaRuntimeAPI:
     global _RUNTIME_API
     with _RUNTIME_LOCK:
+        if _RUNTIME_API is not None:
+            return _RUNTIME_API
         _RUNTIME_API = LlamaRuntimeAPI(config)
         return _RUNTIME_API
 

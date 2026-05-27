@@ -425,9 +425,30 @@ function extractLayerNeuronListNames(raw) {
     } else if (payload && typeof payload === "object") {
       lists = [payload];
     }
-    return lists
-      .map((x) => (x && typeof x.list_name === "string" ? String(x.list_name).trim() : ""))
-      .filter((x) => x.length > 0);
+    const out = [];
+    lists.forEach((x, idx) => {
+      if (!x || typeof x !== "object") return;
+      const neurons = Array.isArray(x.neurons) ? x.neurons : [];
+      // Lightweight strict validation for picker refresh:
+      // each neuron row must be object-like or 2-item pair-like.
+      const malformed = neurons.some((row) => {
+        if (row && typeof row === "object" && !Array.isArray(row)) return false;
+        if (Array.isArray(row) && row.length === 2) return false;
+        return true;
+      });
+      if (malformed) return;
+      const explicit = typeof x.list_name === "string" ? String(x.list_name).trim() : "";
+      if (explicit) {
+        out.push(explicit);
+        return;
+      }
+      const hasLayer = Number.isFinite(Number(x.nLayer));
+      const hasNeurons = Array.isArray(x.neurons);
+      if (hasLayer && hasNeurons) {
+        out.push(`list_${idx + 1}`);
+      }
+    });
+    return out;
   } catch (_err) {
     return [];
   }
@@ -473,21 +494,34 @@ function updateLayerNeuronsListPicker() {
   const selectedField = paramsForm.querySelector(".field[data-field-name='selected_list_name']");
   if (!selectedInput || !jsonInput || !selectedField) return;
   let picker = selectedField.querySelector("select[name='selected_list_name_picker']");
+  let refreshBtn = selectedField.querySelector("button[name='selected_list_name_refresh']");
   if (!picker) {
     const inline = document.createElement("div");
     inline.className = "field-inline";
     picker = document.createElement("select");
     picker.name = "selected_list_name_picker";
+    refreshBtn = document.createElement("button");
+    refreshBtn.type = "button";
+    refreshBtn.name = "selected_list_name_refresh";
+    refreshBtn.textContent = "Recognize JSON";
+    refreshBtn.title = "Parse JSON and refresh list_name options";
+    refreshBtn.style.marginLeft = "8px";
     inline.appendChild(picker);
+    inline.appendChild(refreshBtn);
     selectedField.appendChild(inline);
     picker.addEventListener("change", () => {
       selectedInput.value = String(picker.value || "");
       updateCommandPreview();
     });
-    jsonInput.addEventListener("input", () => {
+    const refreshFromJson = () => {
       refreshLayerNeuronsListPickerOptions(picker, jsonInput, selectedInput);
       updateCommandPreview();
-    });
+    };
+    // Real-time refresh while editing JSON.
+    jsonInput.addEventListener("input", refreshFromJson);
+    jsonInput.addEventListener("change", refreshFromJson);
+    // Manual refresh button for explicit "recognize now" workflow.
+    refreshBtn.addEventListener("click", refreshFromJson);
   }
   refreshLayerNeuronsListPickerOptions(picker, jsonInput, selectedInput);
   updateLayerNeuronsListPickerVisibility();
@@ -741,9 +775,50 @@ function renderResultInWindow(studyWindow, result) {
     summary.appendChild(pre);
   }
 
+  renderStudyMetaIntoDoc(doc, summary, result && result.hidden_state_heatmap ? result.hidden_state_heatmap : null);
+
   renderHeatmapIntoDoc(doc, hidden, result.hidden_state_heatmap);
   renderCsvIntoDoc(doc, csv, result.csv_preview);
   renderArtifactsIntoDoc(doc, artifacts, result.artifacts || []);
+}
+
+function renderStudyMetaIntoDoc(doc, container, heatmap) {
+  if (!heatmap || typeof heatmap !== "object") return;
+  const omit = new Set([
+    "matrix",
+    "heatmaps",
+    "top_logits",
+    "top_logits_top100",
+    "neuron_logits_rows",
+    "neuron_logits_batches",
+    "ui_tasks",
+    "all_token_hidden_by_layer",
+    "last_token_attention_by_layer",
+  ]);
+  const meta = {};
+  Object.keys(heatmap).forEach((k) => {
+    if (omit.has(k)) return;
+    const v = heatmap[k];
+    if (v === undefined) return;
+    if (Array.isArray(v) && v.length > 50) return;
+    if (typeof v === "object" && v !== null) return;
+    meta[k] = v;
+  });
+  if (!Object.prototype.hasOwnProperty.call(meta, "study")) {
+    meta.study = String(heatmap.study || "unknown");
+  }
+  const title = doc.createElement("div");
+  title.style.marginTop = "8px";
+  title.style.fontWeight = "600";
+  title.textContent = "Study Meta (JSON)";
+  container.appendChild(title);
+
+  const pre = doc.createElement("pre");
+  pre.className = "scroll";
+  pre.style.maxHeight = "220px";
+  pre.style.padding = "10px";
+  pre.textContent = JSON.stringify(meta, null, 2);
+  container.appendChild(pre);
 }
 
 function renderCsvIntoDoc(doc, container, csvPreview) {
@@ -899,6 +974,15 @@ function renderHeatmapIntoDoc(doc, container, heatmap) {
             Array.isArray(value) ? value : [],
             heatmap,
           );
+          return;
+        }
+        if (name === "render_text_output") {
+          renderTextOutputIntoDoc(
+            doc,
+            container,
+            String(value ?? ""),
+            heatmap,
+          );
         }
       } catch (taskErr) {
         const warn = doc.createElement("div");
@@ -927,10 +1011,52 @@ function renderHeatmapIntoDoc(doc, container, heatmap) {
   renderTopLogitsTableIntoDoc(doc, container, heatmap.top_logits_top100 || [], heatmap, "Top 15 Logits (Penultimate Top-100 Intervention)", "top_logits_top100_source", "top_logits_top100_error");
 }
 
+function renderTextOutputIntoDoc(doc, container, text, heatmap) {
+  const title = doc.createElement("h4");
+  title.style.margin = "10px 0 6px 0";
+  const limit = Number((heatmap && heatmap.generated_max_new_tokens) || 256);
+  title.textContent = `Generated Text (max_new_tokens=${Number.isFinite(limit) ? limit : 256})`;
+  container.appendChild(title);
+
+  const err = heatmap && heatmap.generated_text_error ? String(heatmap.generated_text_error) : "";
+  if (err) {
+    const errNode = doc.createElement("div");
+    errNode.className = "error";
+    errNode.textContent = `Generation failed: ${err}`;
+    container.appendChild(errNode);
+    return;
+  }
+
+  const pre = doc.createElement("pre");
+  pre.className = "scroll";
+  pre.style.whiteSpace = "pre-wrap";
+  pre.style.wordBreak = "break-word";
+  pre.style.padding = "10px";
+  pre.textContent = String(text || "");
+  container.appendChild(pre);
+}
+
 function renderOneHeatmapIntoDoc(doc, container, matrix, titleText, syncGroup) {
   const rows = Number(Array.isArray(matrix) ? matrix.length : 0);
   const cols = Number(rows > 0 && Array.isArray(matrix[0]) ? matrix[0].length : 0);
   if (!rows || !cols) return;
+  const originalMatrix = Array.isArray(matrix)
+    ? matrix.map((row) => (Array.isArray(row) ? row.map((v) => Number(v || 0)) : []))
+    : [];
+  const rowRmsCoeffs = new Array(rows).fill(1.0);
+  const normalizedMatrix = originalMatrix.map((row, r) => {
+    const width = Math.max(1, Number(row.length || 0));
+    let sqSum = 0.0;
+    for (let i = 0; i < width; i += 1) {
+      const v = Number(row[i] || 0);
+      sqSum += v * v;
+    }
+    const rms = Math.sqrt(sqSum / width);
+    const coeff = Number.isFinite(rms) && rms > 1e-12 ? rms : 1.0;
+    rowRmsCoeffs[r] = coeff;
+    return row.map((v) => Number(v || 0) / coeff);
+  });
+  let normEnabled = false;
 
   const header = doc.createElement("div");
   header.style.display = "flex";
@@ -968,9 +1094,16 @@ function renderOneHeatmapIntoDoc(doc, container, matrix, titleText, syncGroup) {
   thresholdSlider.value = String(heatmapThreshold);
   const thresholdValue = doc.createElement("span");
   thresholdValue.textContent = Number(heatmapThreshold).toFixed(2);
+  const normLabel = doc.createElement("span");
+  normLabel.textContent = " Norm ";
+  const normCheckbox = doc.createElement("input");
+  normCheckbox.type = "checkbox";
+  normCheckbox.checked = false;
   controls.appendChild(thresholdLabel);
   controls.appendChild(thresholdSlider);
   controls.appendChild(thresholdValue);
+  controls.appendChild(normLabel);
+  controls.appendChild(normCheckbox);
   body.appendChild(controls);
 
   const wrap = doc.createElement("div");
@@ -1027,9 +1160,14 @@ function renderOneHeatmapIntoDoc(doc, container, matrix, titleText, syncGroup) {
   const guideCtx = guideCanvas.getContext("2d");
   if (!ctx || !guideCtx) return;
 
+  function getActiveMatrix() {
+    return normEnabled ? normalizedMatrix : originalMatrix;
+  }
+
   function drawWithThreshold(threshold) {
+    const active = getActiveMatrix();
     for (let r = 0; r < rows; r += 1) {
-      const row = matrix[r] || [];
+      const row = active[r] || [];
       for (let c = 0; c < cols; c += 1) {
         const v = Number(row[c] || 0);
         ctx.fillStyle = heatmapColorFromValue(v, threshold);
@@ -1077,9 +1215,12 @@ function renderOneHeatmapIntoDoc(doc, container, matrix, titleText, syncGroup) {
       hoverMeta.textContent = "Hover: X=-, Y=-";
       return;
     }
-    const row = matrix[y] || [];
+    const row = getActiveMatrix()[y] || [];
     const value = Number(row[x] || 0);
-    hoverMeta.textContent = `Hover: X=${x} (neuron), Y=${y} (layer), value=${value.toFixed(6)}`;
+    const coeff = Number(rowRmsCoeffs[y] || 1.0);
+    hoverMeta.textContent = normEnabled
+      ? `Hover: X=${x} (neuron), Y=${y} (layer), value=${value.toFixed(6)}, rms_coeff=${coeff.toFixed(6)}`
+      : `Hover: X=${x} (neuron), Y=${y} (layer), value=${value.toFixed(6)}`;
   }
 
   if (syncGroup) {
@@ -1110,6 +1251,11 @@ function renderOneHeatmapIntoDoc(doc, container, matrix, titleText, syncGroup) {
   thresholdSlider.addEventListener("input", () => {
     heatmapThreshold = Number(thresholdSlider.value);
     thresholdValue.textContent = heatmapThreshold.toFixed(2);
+    redrawBase();
+    redrawGuide();
+  });
+  normCheckbox.addEventListener("change", () => {
+    normEnabled = Boolean(normCheckbox.checked);
     redrawBase();
     redrawGuide();
   });
