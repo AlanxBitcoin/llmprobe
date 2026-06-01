@@ -41,7 +41,7 @@ function renderCsvIntoDoc(doc, container, csvPreview) {
       return;
     }
     cell.style.backgroundColor = colorFromValue(n, threshold);
-    cell.style.color = "#f2f5f8";
+    cell.style.color = "#8a949e";
   };
 
   let localThreshold = Number(csvStateThreshold);
@@ -87,9 +87,18 @@ function renderCsvIntoDoc(doc, container, csvPreview) {
   wrap.className = "scroll";
   wrap.style.maxHeight = "1560px";
   const table = doc.createElement("table");
+  table.style.width = "max-content";
+  table.style.tableLayout = "auto";
+  table.style.fontSize = "12px";
   const thead = doc.createElement("thead");
   const hr = doc.createElement("tr");
-  headers.forEach((h) => { const th = doc.createElement("th"); th.textContent = h; hr.appendChild(th); });
+  headers.forEach((h) => {
+    const th = doc.createElement("th");
+    th.textContent = h;
+    th.style.padding = "3px 5px";
+    th.style.whiteSpace = "nowrap";
+    hr.appendChild(th);
+  });
   thead.appendChild(hr);
   table.appendChild(thead);
   const tbody = doc.createElement("tbody");
@@ -108,7 +117,13 @@ function renderCsvIntoDoc(doc, container, csvPreview) {
     const tr = doc.createElement("tr");
     headers.forEach((h, idx) => {
       const td = doc.createElement("td");
-      td.textContent = formatCsvValue(h, row[h]);
+      const formattedValue = formatCsvValue(h, row[h]);
+      td.textContent = formattedValue;
+      td.style.padding = "2px 5px";
+      td.style.whiteSpace = "nowrap";
+      if (formattedValue !== "" && Number.isFinite(Number(formattedValue))) {
+        td.style.color = "#8a949e";
+      }
       if (colorHeaderFlags[idx]) {
         td.setAttribute("data-state-value", String(row[h] ?? ""));
         setStateCellColor(td, row[h], localThreshold);

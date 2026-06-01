@@ -35,6 +35,7 @@ _RUN_STATE: dict[str, Any] = {"action_id": None, "started_at": 0.0, "eta_seconds
 _ACTION_DURATION_SECONDS: dict[str, float] = {}
 _TASKS_LOCK = threading.Lock()
 _TASKS: dict[str, dict[str, Any]] = {}
+_MAX_CSV_PREVIEW_ROWS = 200
 
 
 def _batch_cache_path(project_root: Path) -> Path:
@@ -862,7 +863,7 @@ def execute_ui_action(
             artifacts = collect_recent_artifacts(output_root, since_timestamp=started_at)
             csv_preview = newest_csv_preview(artifacts)
         if action.command == "run-attribute-group-neurons" and csv_preview is None:
-            csv_preview = _csv_preview_from_command_result(command_result, max_rows=max_csv_preview_rows)
+            csv_preview = _csv_preview_from_command_result(command_result, max_rows=_MAX_CSV_PREVIEW_ROWS)
         return {
             "status": "ok" if return_code == 0 else "error",
             "action": action.to_dict(),
@@ -1012,7 +1013,7 @@ def start_ui_action_task(
                 artifacts = collect_recent_artifacts(output_root, since_timestamp=started_at)
                 csv_preview = newest_csv_preview(artifacts)
             if action.command == "run-attribute-group-neurons" and csv_preview is None:
-                csv_preview = _csv_preview_from_command_result(command_result, max_rows=max_csv_preview_rows)
+                csv_preview = _csv_preview_from_command_result(command_result, max_rows=_MAX_CSV_PREVIEW_ROWS)
 
             result = {
                 "status": "ok",

@@ -178,6 +178,14 @@ def _collect_group_context(
         store=store,
         token_items=list(group.get("tokens") or []),
     )
+    if token_errors:
+        return {
+            "ok": False,
+            "reason": "token_resolution_failed",
+            "token_ids": token_ids,
+            "layers_by_token": layers_by_token,
+            "token_errors": token_errors,
+        }
     if not token_ids:
         return {
             "ok": False,
@@ -254,6 +262,7 @@ def _filter_algorithm_1(
     - Fixed layer = 8.
     - Compare group mean hidden-state vs random-1000-token mean baseline at layer 8.
     - Keep neurons where abs(diff) > 0.2.
+    - Keep neurons where abs(group_mean) >= 0.1.
 
     Step 2 (candidate2):
     - For a candidate neuron, there exists at least one token such that:
@@ -286,7 +295,8 @@ def _filter_algorithm_1(
         baseline_zero,
         np.logical_or(ratio < 0.0, ratio > 3.0),
     )
-    candidate1 = np.where(np.logical_and(diff > 0.2, ratio_cond))[0].astype(np.int32)
+    mean_abs_cond = np.abs(g) >= 0.1
+    candidate1 = np.where(np.logical_and(np.logical_and(diff > 0.2, ratio_cond), mean_abs_cond))[0].astype(np.int32)
 
     layers_by_token = dict((context or {}).get("layers_by_token") or {})
     token_ids = [int(x) for x in ((context or {}).get("token_ids") or [])]
@@ -498,14 +508,18 @@ def run_study(
     layers_by_token = dict(context.get("layers_by_token") or {})
     token_errors = list(context.get("token_errors") or [])
     if not bool(context.get("ok")) or not token_ids:
+        reason = str(context.get("reason") or "no_valid_tokens_after_resolution")
         return {
             "ok": False,
-            "reason": "no_valid_tokens_after_resolution",
+            "reason": reason,
             "groups_file": str(groups_file),
             "selected_attribute_group": str(group.get("group_name") or ""),
             "token_errors": token_errors,
             "ui_tasks": [{"name": "render_text_output", "value_key": "summary_text"}],
-            "summary_text": f"No valid tokens in group {group.get('group_name')}. token_errors={token_errors}",
+            "summary_text": (
+                f"Token validation failed for group {group.get('group_name')}. "
+                f"reason={reason}. token_errors={token_errors}"
+            ),
         }
 
     filter_cfg = dict(group.get("filter") or {})
