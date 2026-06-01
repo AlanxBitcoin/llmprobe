@@ -184,25 +184,8 @@ async function loadLayerNeuronsJsonIntoTextbox() {
 }
 
 async function loadAttributeGroupsJsonIntoTextbox() {
-  if (!selectedAction || selectedAction.id !== "study_attribute_group_neurons") return;
-  const textArea = paramsForm.elements.namedItem("attribute_groups_json");
-  const selectedInput = paramsForm.elements.namedItem("selected_attribute_group");
-  if (!textArea) return;
-  try {
-    const resp = await fetch("/api/attribute-groups/json");
-    const payload = await resp.json();
-    if (!payload || payload.status !== "ok") return;
-    attributeGroupsFullPayload = normalizeAttributeGroupsPayload(safeJsonParse(payload.json_text, {}));
-    if (selectedInput && !String(selectedInput.value || "").trim()) {
-      const names = getAttributeGroupNamesFromPayload(attributeGroupsFullPayload);
-      if (names.length > 0) selectedInput.value = names[0];
-    }
-    renderSelectedAttributeGroupEntry();
-    updateAttributeGroupsPicker();
-    updateCommandPreview();
-  } catch (_err) {
-    // Keep current textarea value if file-load fails.
-  }
+  if (!window.AppHomepageAttributeGroups) return;
+  return window.AppHomepageAttributeGroups.loadAttributeGroupsJsonIntoTextbox();
 }
 
 function renderForm(fields, initialParams = null) {
@@ -427,9 +410,15 @@ async function updateBatchNameDropdown() {
   newBtn.textContent = "New Entry";
   newBtn.title = "Create a new batch draft";
   newBtn.style.marginLeft = "8px";
+  const deleteBtn = document.createElement("button");
+  deleteBtn.type = "button";
+  deleteBtn.textContent = "Delete";
+  deleteBtn.title = "Delete selected batch from batch cache";
+  deleteBtn.style.marginLeft = "8px";
   inline.appendChild(picker);
   inline.appendChild(saveBtn);
   inline.appendChild(newBtn);
+  inline.appendChild(deleteBtn);
   batchField.appendChild(inline);
 
   let batchItems = [];
@@ -483,6 +472,35 @@ async function updateBatchNameDropdown() {
       updateCommandPreview();
     } catch (_err) {
       // keep local fields unchanged on save failure
+    }
+  });
+
+  deleteBtn.addEventListener("click", async () => {
+    const selectedName = String((picker.value || batchInput.value || "")).trim();
+    if (!selectedName) return;
+    try {
+      const resp = await fetch("/api/batches/delete", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ batch_name: selectedName }),
+      });
+      const payload = await resp.json();
+      batchItems = Array.isArray(payload && payload.batches) ? payload.batches : [];
+      refreshBatchPickerOptions(picker, batchItems, batchInput);
+      const names = batchItems.map((x) => String(x.name || "").trim()).filter(Boolean);
+      if (names.length > 0) {
+        const next = names[0];
+        const nextItem = batchItems.find((x) => String(x.name || "").trim() === next) || null;
+        batchInput.value = next;
+        wordsInput.value = nextItem ? String(nextItem.words_csv || "") : "";
+      } else {
+        batchInput.value = "";
+        wordsInput.value = "";
+      }
+      picker.value = "";
+      updateCommandPreview();
+    } catch (_err) {
+      // keep local fields unchanged on delete failure
     }
   });
   updateBatchNameDropdownVisibility();
@@ -580,26 +598,8 @@ function validateLayerNeuronEntryFromEditor() {
 }
 
 function validateAttributeGroupEntryFromEditor() {
-  const textArea = paramsForm.elements.namedItem("attribute_groups_json");
-  const selectedInput = paramsForm.elements.namedItem("selected_attribute_group");
-  if (!textArea) return null;
-  let entry = null;
-  try {
-    entry = strictJsonParse(textArea.value, "Attribute group entry");
-  } catch (err) {
-    return String(err && err.message ? err.message : err);
-  }
-  const normalized = normalizeAttributeGroupsPayload(entry);
-  const one = (normalized.groups || [])[0] || null;
-  if (!one) return "Attribute group entry JSON invalid: empty entry.";
-  const selected = String((selectedInput && selectedInput.value) || "").trim();
-  const groupName = String(selected || one.group_name || "").trim();
-  if (!groupName) return "Attribute group entry JSON invalid: group_name is required.";
-  const tokens = Array.isArray(one.tokens) ? one.tokens : [];
-  if (!tokens.length) return "Attribute group entry JSON invalid: tokens must be non-empty.";
-  const algorithm = Number(one.algorithm);
-  if (!Number.isFinite(algorithm)) return "Attribute group entry JSON invalid: algorithm must be numeric.";
-  return null;
+  if (!window.AppHomepageAttributeGroups) return "Attribute group entry JSON invalid: module missing.";
+  return window.AppHomepageAttributeGroups.validateAttributeGroupEntryFromEditor();
 }
 
 function showJsonValidationError(message) {
@@ -626,20 +626,8 @@ function normalizeLayerNeuronsPayload(payload) {
 }
 
 function normalizeAttributeGroupsPayload(payload) {
-  let groups = [];
-  if (Array.isArray(payload)) groups = payload;
-  else if (payload && Array.isArray(payload.groups)) groups = payload.groups;
-  else if (payload && typeof payload === "object") groups = [payload];
-  const out = [];
-  groups.forEach((g, idx) => {
-    if (!g || typeof g !== "object") return;
-    const group_name = String(g.group_name || g.name || `group_${idx + 1}`).trim();
-    const tokens = Array.isArray(g.tokens) ? g.tokens : String(g.tokens || "").split(",").map((x) => x.trim()).filter(Boolean);
-    const algorithm = Number.isFinite(Number(g.algorithm)) ? Number(g.algorithm) : 1;
-    if (!group_name) return;
-    out.push({ group_name, tokens, algorithm });
-  });
-  return { groups: out };
+  if (!window.AppHomepageAttributeGroups) return { groups: [] };
+  return window.AppHomepageAttributeGroups.normalizeAttributeGroupsPayload(payload);
 }
 
 function getLayerNeuronListNamesFromPayload(payload) {
@@ -648,8 +636,8 @@ function getLayerNeuronListNamesFromPayload(payload) {
 }
 
 function getAttributeGroupNamesFromPayload(payload) {
-  const groups = Array.isArray(payload && payload.groups) ? payload.groups : [];
-  return groups.map((x) => String(x.group_name || "").trim()).filter(Boolean);
+  if (!window.AppHomepageAttributeGroups) return [];
+  return window.AppHomepageAttributeGroups.getAttributeGroupNamesFromPayload(payload);
 }
 
 function renderSelectedLayerNeuronEntry() {
@@ -668,18 +656,8 @@ function renderSelectedLayerNeuronEntry() {
 }
 
 function renderSelectedAttributeGroupEntry() {
-  const textArea = paramsForm.elements.namedItem("attribute_groups_json");
-  const selectedInput = paramsForm.elements.namedItem("selected_attribute_group");
-  if (!textArea || !selectedInput) return;
-  const payload = normalizeAttributeGroupsPayload(attributeGroupsFullPayload || {});
-  const selected = String(selectedInput.value || "").trim();
-  const hit = (payload.groups || []).find((x) => String(x.group_name || "") === selected);
-  if (hit) {
-    textArea.value = JSON.stringify(hit);
-    return;
-  }
-  const draft = { group_name: selected || "new_group", tokens: "red, blue, green", algorithm: 1 };
-  textArea.value = JSON.stringify(draft);
+  if (!window.AppHomepageAttributeGroups) return;
+  return window.AppHomepageAttributeGroups.renderSelectedAttributeGroupEntry();
 }
 
 function buildLayerNeuronsPayloadJsonFromUi() {
@@ -700,22 +678,8 @@ function buildLayerNeuronsPayloadJsonFromUi() {
 }
 
 function buildAttributeGroupsPayloadJsonFromUi(persist = false) {
-  const textArea = paramsForm.elements.namedItem("attribute_groups_json");
-  const selectedInput = paramsForm.elements.namedItem("selected_attribute_group");
-  const selected = String((selectedInput && selectedInput.value) || "").trim();
-  const entry = safeJsonParse(textArea ? textArea.value : "{}", {});
-  const payload = normalizeAttributeGroupsPayload(attributeGroupsFullPayload || {});
-  const groups = Array.isArray(payload.groups) ? payload.groups.slice() : [];
-  const normalized = normalizeAttributeGroupsPayload(entry);
-  let one = (normalized.groups || [])[0] || {};
-  one = { ...one, group_name: selected || String(one.group_name || "new_group") };
-  const idx = groups.findIndex((x) => String(x.group_name || "") === String(one.group_name || ""));
-  if (idx >= 0) groups[idx] = one;
-  else groups.push(one);
-  if (persist) {
-    attributeGroupsFullPayload = { groups };
-  }
-  return JSON.stringify({ groups }, null, 0);
+  if (!window.AppHomepageAttributeGroups) return JSON.stringify({ groups: [] }, null, 0);
+  return window.AppHomepageAttributeGroups.buildAttributeGroupsPayloadJsonFromUi(persist);
 }
 
 function updateLayerNeuronsListPickerVisibility() {
@@ -758,125 +722,18 @@ function extractAttributeGroupNames(raw) {
 }
 
 function updateAttributeGroupsPickerVisibility() {
-  const picker = paramsForm.querySelector("select[name='selected_attribute_group_picker']");
-  const selectedInput = paramsForm.elements.namedItem("selected_attribute_group");
-  if (!picker || !selectedInput) return;
-  const wrap = picker.closest(".field-inline");
-  if (!wrap) return;
-  wrap.style.display = selectedAction && selectedAction.id === "study_attribute_group_neurons" ? "" : "none";
+  if (!window.AppHomepageAttributeGroups) return;
+  return window.AppHomepageAttributeGroups.updateAttributeGroupsPickerVisibility();
 }
 
 function refreshAttributeGroupsPickerOptions(picker, jsonInput, selectedInput) {
-  const names = getAttributeGroupNamesFromPayload(attributeGroupsFullPayload || {});
-  picker.innerHTML = "";
-  const placeholder = document.createElement("option");
-  placeholder.value = "";
-  placeholder.textContent = names.length > 0 ? "Choose group_name" : "No valid group_name";
-  picker.appendChild(placeholder);
-  names.forEach((name) => {
-    const opt = document.createElement("option");
-    opt.value = name;
-    opt.textContent = name;
-    picker.appendChild(opt);
-  });
-  const current = String((selectedInput.value || "").trim());
-  if (current && names.includes(current)) {
-    picker.value = current;
-  } else if (!current && names.length === 1) {
-    picker.value = names[0];
-    selectedInput.value = names[0];
-  } else {
-    picker.value = "";
-  }
+  if (!window.AppHomepageAttributeGroups) return;
+  return window.AppHomepageAttributeGroups.refreshAttributeGroupsPickerOptions(picker, jsonInput, selectedInput);
 }
 
 function updateAttributeGroupsPicker() {
-  if (!selectedAction || selectedAction.id !== "study_attribute_group_neurons") return;
-  const selectedInput = paramsForm.elements.namedItem("selected_attribute_group");
-  const jsonInput = paramsForm.elements.namedItem("attribute_groups_json");
-  const selectedField = paramsForm.querySelector(".field[data-field-name='selected_attribute_group']");
-  if (!selectedInput || !jsonInput || !selectedField) return;
-  let picker = selectedField.querySelector("select[name='selected_attribute_group_picker']");
-  let refreshBtn = selectedField.querySelector("button[name='selected_attribute_group_refresh']");
-  let newBtn = selectedField.querySelector("button[name='selected_attribute_group_new']");
-  let deleteBtn = selectedField.querySelector("button[name='selected_attribute_group_delete']");
-  if (!picker) {
-    const inline = document.createElement("div");
-    inline.className = "field-inline";
-    picker = document.createElement("select");
-    picker.name = "selected_attribute_group_picker";
-    refreshBtn = document.createElement("button");
-    refreshBtn.type = "button";
-    refreshBtn.name = "selected_attribute_group_refresh";
-    refreshBtn.textContent = "Save Entry";
-    refreshBtn.title = "Save current group entry into groups JSON";
-    refreshBtn.style.marginLeft = "8px";
-    newBtn = document.createElement("button");
-    newBtn.type = "button";
-    newBtn.name = "selected_attribute_group_new";
-    newBtn.textContent = "New Entry";
-    newBtn.title = "Create a new group draft in editor";
-    newBtn.style.marginLeft = "8px";
-    deleteBtn = document.createElement("button");
-    deleteBtn.type = "button";
-    deleteBtn.name = "selected_attribute_group_delete";
-    deleteBtn.textContent = "Delete";
-    deleteBtn.title = "Delete selected group entry from groups JSON";
-    deleteBtn.style.marginLeft = "8px";
-    inline.appendChild(picker);
-    inline.appendChild(refreshBtn);
-    inline.appendChild(newBtn);
-    inline.appendChild(deleteBtn);
-    selectedField.appendChild(inline);
-    picker.addEventListener("change", () => {
-      selectedInput.value = String(picker.value || "");
-      renderSelectedAttributeGroupEntry();
-      updateCommandPreview();
-    });
-    const saveCurrentEntry = () => {
-      const err = validateAttributeGroupEntryFromEditor();
-      if (err) {
-        showJsonValidationError(err);
-        return;
-      }
-      clearInlineParamResult();
-      buildAttributeGroupsPayloadJsonFromUi(true);
-      refreshAttributeGroupsPickerOptions(picker, jsonInput, selectedInput);
-      renderSelectedAttributeGroupEntry();
-      updateCommandPreview();
-    };
-    refreshBtn.addEventListener("click", saveCurrentEntry);
-    newBtn.addEventListener("click", () => {
-      const names = getAttributeGroupNamesFromPayload(attributeGroupsFullPayload || {});
-      const base = "new_group";
-      let i = 1;
-      let candidate = `${base}_${i}`;
-      while (names.includes(candidate)) {
-        i += 1;
-        candidate = `${base}_${i}`;
-      }
-      selectedInput.value = candidate;
-      picker.value = "";
-      renderSelectedAttributeGroupEntry();
-      updateCommandPreview();
-    });
-    deleteBtn.addEventListener("click", () => {
-      const selected = String((selectedInput.value || "").trim());
-      if (!selected) return;
-      const payload = normalizeAttributeGroupsPayload(attributeGroupsFullPayload || {});
-      const groups = Array.isArray(payload.groups) ? payload.groups.slice() : [];
-      const filtered = groups.filter((x) => String(x.group_name || "") !== selected);
-      attributeGroupsFullPayload = { groups: filtered };
-      const names = getAttributeGroupNamesFromPayload(attributeGroupsFullPayload || {});
-      selectedInput.value = names.length > 0 ? names[0] : "";
-      refreshAttributeGroupsPickerOptions(picker, jsonInput, selectedInput);
-      renderSelectedAttributeGroupEntry();
-      updateCommandPreview();
-    });
-  }
-  refreshAttributeGroupsPickerOptions(picker, jsonInput, selectedInput);
-  renderSelectedAttributeGroupEntry();
-  updateAttributeGroupsPickerVisibility();
+  if (!window.AppHomepageAttributeGroups) return;
+  return window.AppHomepageAttributeGroups.updateAttributeGroupsPicker();
 }
 
 function refreshLayerNeuronsListPickerOptions(picker, jsonInput, selectedInput) {
@@ -912,6 +769,7 @@ function updateLayerNeuronsListPicker() {
   let picker = selectedField.querySelector("select[name='selected_list_name_picker']");
   let refreshBtn = selectedField.querySelector("button[name='selected_list_name_refresh']");
   let newBtn = selectedField.querySelector("button[name='selected_list_name_new']");
+  let deleteBtn = selectedField.querySelector("button[name='selected_list_name_delete']");
   if (!picker) {
     const inline = document.createElement("div");
     inline.className = "field-inline";
@@ -929,9 +787,16 @@ function updateLayerNeuronsListPicker() {
     newBtn.textContent = "New Entry";
     newBtn.title = "Create a new list draft in editor";
     newBtn.style.marginLeft = "8px";
+    deleteBtn = document.createElement("button");
+    deleteBtn.type = "button";
+    deleteBtn.name = "selected_list_name_delete";
+    deleteBtn.textContent = "Delete";
+    deleteBtn.title = "Delete selected list entry from lists JSON";
+    deleteBtn.style.marginLeft = "8px";
     inline.appendChild(picker);
     inline.appendChild(refreshBtn);
     inline.appendChild(newBtn);
+    inline.appendChild(deleteBtn);
     selectedField.appendChild(inline);
     picker.addEventListener("change", () => {
       selectedInput.value = String(picker.value || "");
@@ -965,6 +830,19 @@ function updateLayerNeuronsListPicker() {
       renderSelectedLayerNeuronEntry();
       updateCommandPreview();
     });
+    deleteBtn.addEventListener("click", () => {
+      const selected = String((selectedInput.value || "").trim());
+      if (!selected) return;
+      const payload = normalizeLayerNeuronsPayload(layerNeuronsFullPayload || {});
+      const lists = Array.isArray(payload.lists) ? payload.lists.slice() : [];
+      const filtered = lists.filter((x) => String(x.list_name || "") !== selected);
+      layerNeuronsFullPayload = { lists: filtered };
+      const names = getLayerNeuronListNamesFromPayload(layerNeuronsFullPayload || {});
+      selectedInput.value = names.length > 0 ? names[0] : "";
+      refreshLayerNeuronsListPickerOptions(picker, jsonInput, selectedInput);
+      renderSelectedLayerNeuronEntry();
+      updateCommandPreview();
+    });
   }
   refreshLayerNeuronsListPickerOptions(picker, jsonInput, selectedInput);
   renderSelectedLayerNeuronEntry();
@@ -979,6 +857,8 @@ async function runSelectedAction() {
       showJsonValidationError(err);
       return;
     }
+    // Auto-save current editor entry before execute.
+    buildAttributeGroupsPayloadJsonFromUi(true);
   }
   if (selectedAction.id === "study_layer_neurons") {
     const err = validateLayerNeuronEntryFromEditor();
@@ -986,6 +866,8 @@ async function runSelectedAction() {
       showJsonValidationError(err);
       return;
     }
+    // Auto-save current editor entry before execute.
+    buildLayerNeuronsPayloadJsonFromUi();
   }
   clearInlineParamResult();
   const params = collectParams();
@@ -1050,6 +932,23 @@ function escapeHtml(value) {
     .replace(/"/g, "&quot;");
 }
 
+function initAttributeGroupsModule() {
+  if (!window.AppHomepageAttributeGroups || typeof window.AppHomepageAttributeGroups.init !== "function") return;
+  window.AppHomepageAttributeGroups.init({
+    getSelectedAction: () => selectedAction,
+    getParamsForm: () => paramsForm,
+    getAttributeGroupsFullPayload: () => attributeGroupsFullPayload,
+    setAttributeGroupsFullPayload: (value) => {
+      attributeGroupsFullPayload = value;
+    },
+    safeJsonParse,
+    updateCommandPreview,
+    clearInlineParamResult,
+    showJsonValidationError,
+  });
+}
+
+initAttributeGroupsModule();
 runButton.addEventListener("click", runSelectedAction);
 openHistoryButton.addEventListener("click", openLatestFfnHistory);
 paramsForm.addEventListener("submit", (event) => {

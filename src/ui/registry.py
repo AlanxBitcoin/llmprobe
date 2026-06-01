@@ -306,5 +306,7 @@ def build_command_args(action: UIAction, params: dict[str, Any]) -> list[str]:
             str(params.get("selected_attribute_group") or ""),
             "--attribute-groups-json",
             str(params.get("attribute_groups_json") or ""),
+            "--filter-json",
+            str(params.get("filter_json") or ""),
         ]
     return [action.command]

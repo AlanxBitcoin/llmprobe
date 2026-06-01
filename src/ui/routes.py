@@ -26,6 +26,7 @@ from src.utils.layer_neurons_list_file import ensure_layer_neurons_list_file
 from src.utils.layer_neurons_list_file import load_layer_neurons_list_text
 from src.utils.attribute_groups_file import ensure_attribute_groups_file
 from src.utils.attribute_groups_file import load_attribute_groups_text
+from src.utils.attribute_groups_file import format_attribute_groups_json
 
 from .registry import build_command_args, get_ui_action, list_ui_actions
 from .result_render import collect_recent_artifacts, newest_csv_preview, preview_csv
@@ -79,6 +80,15 @@ def upsert_batch_mapping(project_root: str | Path, *, batch_name: str, words_csv
     data[name] = words
     save_batch_cache(project_root, data)
 
+def delete_batch_mapping(project_root: str | Path, *, batch_name: str) -> None:
+    name = str(batch_name).strip()
+    if not name:
+        return
+    data = load_batch_cache(project_root)
+    if name in data:
+        del data[name]
+    save_batch_cache(project_root, data)
+
 
 def batch_options_payload(project_root: str | Path) -> dict[str, Any]:
     data = load_batch_cache(project_root)
@@ -111,7 +121,7 @@ def attribute_groups_payload(project_root: str | Path) -> dict[str, Any]:
         normalized_text = text
         try:
             payload = json.loads(text)
-            normalized_text = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+            normalized_text = format_attribute_groups_json(payload)
             if normalized_text.strip() != text.strip():
                 path.write_text(normalized_text, encoding="utf-8")
         except Exception:
@@ -192,7 +202,7 @@ def _prevalidate_and_save_attribute_groups_json(project_root: Path, params: dict
     except json.JSONDecodeError as exc:
         return f"invalid_json:{exc.msg}"
     target = ensure_attribute_groups_file(project_root)
-    target.write_text(json.dumps(payload, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
+    target.write_text(format_attribute_groups_json(payload), encoding="utf-8")
     return None
 
 

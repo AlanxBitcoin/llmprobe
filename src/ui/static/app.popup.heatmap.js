@@ -1,9 +1,12 @@
-﻿function heatmapColorFromValue(value, threshold) {
+function heatmapColorFromValue(value, threshold) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return "rgb(0,0,0)";
+  if (Math.abs(n) < 1e-12) return "rgb(0,0,0)";
   const safeThreshold = Math.max(0.000001, Number(threshold) || 1);
-  const intensity = Math.min(1, Math.abs(Number(value) || 0) / safeThreshold);
-  const red = value > 0 ? Math.round(255 * intensity) : 0;
-  const blue = value < 0 ? Math.round(255 * intensity) : 0;
-  if (value > 0 || value < 0) return `rgb(${red},0,${blue})`;
+  const intensity = Math.min(1, Math.abs(n) / safeThreshold);
+  const channel = Math.max(0, Math.min(255, Math.round(255 * intensity)));
+  if (n > 0) return `rgb(${channel},0,0)`;
+  if (n < 0) return `rgb(0,0,${channel})`;
   return "rgb(0,0,0)";
 }
 

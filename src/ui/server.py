@@ -19,6 +19,7 @@ from .routes import (
     actions_payload,
     attribute_groups_payload,
     batch_options_payload,
+    delete_batch_mapping,
     upsert_batch_mapping,
     execute_chat_completion,
     execute_ui_action,
@@ -102,6 +103,15 @@ def _run_fastapi_server(project_root: Path, config_path: Path, *, host: str, por
             project_root,
             batch_name=str(payload.get("batch_name") or ""),
             words_csv=str(payload.get("words_csv") or ""),
+        )
+        return JSONResponse({"status": "ok", **batch_options_payload(project_root)}, status_code=200)
+
+    @app.post("/api/batches/delete")
+    async def api_batches_delete(payload: dict[str, Any] | None = Body(default=None)):
+        payload = payload or {}
+        delete_batch_mapping(
+            project_root,
+            batch_name=str(payload.get("batch_name") or ""),
         )
         return JSONResponse({"status": "ok", **batch_options_payload(project_root)}, status_code=200)
 
@@ -334,7 +344,7 @@ def _make_handler(project_root: Path, config_path: Path) -> type[BaseHTTPRequest
 
         def do_POST(self) -> None:  # noqa: N802
             parsed = urlparse(self.path)
-            if parsed.path not in {"/api/execute", "/api/chat", "/api/batches/upsert"}:
+            if parsed.path not in {"/api/execute", "/api/chat", "/api/batches/upsert", "/api/batches/delete"}:
                 self._send_json({"error": "Not found"}, status=404)
                 return
             content_length = int(self.headers.get("Content-Length") or 0)
@@ -357,6 +367,12 @@ def _make_handler(project_root: Path, config_path: Path) -> type[BaseHTTPRequest
                         project_root,
                         batch_name=str(payload.get("batch_name") or ""),
                         words_csv=str(payload.get("words_csv") or ""),
+                    )
+                    result = {"status": "ok", **batch_options_payload(project_root)}
+                elif parsed.path == "/api/batches/delete":
+                    delete_batch_mapping(
+                        project_root,
+                        batch_name=str(payload.get("batch_name") or ""),
                     )
                     result = {"status": "ok", **batch_options_payload(project_root)}
                 else:

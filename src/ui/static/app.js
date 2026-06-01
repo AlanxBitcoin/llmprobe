@@ -1,5 +1,6 @@
 ﻿(() => {
   const parts = [
+    "/static/app.homepage.attribute_groups.js",
     "/static/app.homepage.js",
     "/static/app.homepage.chat.js",
   ];

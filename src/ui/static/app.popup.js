@@ -8,6 +8,12 @@ function escapeHtml(value) {
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;");
 }
+
+function renderBusySummary(node, message) {
+  if (!node) return;
+  node.innerHTML = `<div class="muted" style="display:flex;align-items:center;gap:8px;"><span aria-hidden="true" style="width:14px;height:14px;border:2px solid #c5cfda;border-top-color:#2d7d4f;border-radius:50%;display:inline-block;animation:spin 0.8s linear infinite;"></span><span>${escapeHtml(String(message || "Running ..."))}</span></div>`;
+}
+
 function renderResultInWindow(studyWindow, result) {
   if (!studyWindow || studyWindow.closed) return;
   const doc = studyWindow.document;
@@ -23,6 +29,9 @@ function renderResultInWindow(studyWindow, result) {
   th{position:sticky;top:0;background:#edf2f4}
   canvas{display:block}
   a{display:block;margin:4px 0}
+  .status-row{display:flex;align-items:center;gap:8px}
+  .spinner{width:14px;height:14px;border:2px solid #c5cfda;border-top-color:#4d6f8f;border-radius:50%;display:inline-block;animation:spin 0.8s linear infinite}
+  @keyframes spin{to{transform:rotate(360deg)}}
   </style></head><body>
   <h2>Study Result</h2>
   <div id="summary" class="box"></div>
@@ -54,6 +63,9 @@ function openAndRunInPopup(request) {
   th{position:sticky;top:0;background:#edf2f4}
   canvas{display:block}
   a{display:block;margin:4px 0}
+  .status-row{display:flex;align-items:center;gap:8px}
+  .spinner{width:14px;height:14px;border:2px solid #c5cfda;border-top-color:#4d6f8f;border-radius:50%;display:inline-block;animation:spin 0.8s linear infinite}
+  @keyframes spin{to{transform:rotate(360deg)}}
   </style></head><body>
   <h2>Study Result</h2>
   <div id="summary" class="box"></div>
@@ -146,9 +158,7 @@ async function runPopupRequest(request) {
   const summary = document.getElementById("summary");
   const kind = String((request && request.kind) || "execute");
   const actionId = String((request && request.action_id) || "");
-  if (summary) {
-    summary.innerHTML = `<div class="muted">Running ${escapeHtml(actionId || kind)} ...</div>`;
-  }
+  renderBusySummary(summary, `Running ${actionId || kind} ...`);
   try {
     if (kind === "history") {
       const selectedName = String((request && request.selected_name) || "").trim();
@@ -201,9 +211,7 @@ function waitPopupTask(taskId, summaryNode) {
         if (payload && payload.status === "running") {
           const running = Number(payload.running_for_seconds || 0);
           const remain = Number(payload.estimated_remaining_seconds || 0);
-          if (summaryNode) {
-            summaryNode.innerHTML = `<div class="muted">Task running (${escapeHtml(tid)}): running=${running.toFixed(1)}s, remaining~${remain.toFixed(1)}s</div>`;
-          }
+          renderBusySummary(summaryNode, `Task running (${tid}): running=${running.toFixed(1)}s, remaining~${remain.toFixed(1)}s`);
           continue;
         }
         return payload;
@@ -223,9 +231,7 @@ function waitPopupTask(taskId, summaryNode) {
       if (payload.status === "running") {
         const running = Number(payload.running_for_seconds || 0);
         const remain = Number(payload.estimated_remaining_seconds || 0);
-        if (summaryNode) {
-          summaryNode.innerHTML = `<div class="muted">Task running (${escapeHtml(tid)}): running=${running.toFixed(1)}s, remaining~${remain.toFixed(1)}s</div>`;
-        }
+        renderBusySummary(summaryNode, `Task running (${tid}): running=${running.toFixed(1)}s, remaining~${remain.toFixed(1)}s`);
         return;
       }
       try { es.close(); } catch (_e) {}

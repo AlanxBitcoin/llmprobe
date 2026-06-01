@@ -267,7 +267,13 @@ def build_parser() -> argparse.ArgumentParser:
         "--attribute-groups-json",
         type=str,
         default="",
-        help="JSON payload: {groups:[{group_name,tokens,filter},...]}",
+        help="JSON payload: {groups:[{group_name,tokens},...]}",
+    )
+    attr_group_neurons.add_argument(
+        "--filter-json",
+        type=str,
+        default="",
+        help="Filter params JSON (e.g. [1], [1,2], or {\"algorithm\":[1]}). Default: [1].",
     )
 
     combo = subparsers.add_parser("run-word-sum", help="Analyze the layer-8 summed representation of two or more words")
@@ -488,6 +494,7 @@ def _execute_parsed_args(args: argparse.Namespace, config: dict[str, Any]) -> di
         heatmap = run_attribute_group_neurons_study(
             attribute_groups_json=str(args.attribute_groups_json or ""),
             selected_attribute_group=str(args.selected_attribute_group or ""),
+            filter_json=str(args.filter_json or ""),
             config=config,
             config_path=args.config,
         )

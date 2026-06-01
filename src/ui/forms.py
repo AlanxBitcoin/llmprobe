@@ -113,9 +113,17 @@ FORM_SCHEMAS: dict[str, list[dict[str, Any]]] = {
             "name": "attribute_groups_json",
             "label": "Attribute Groups JSON",
             "type": "textarea",
-            "default": "{\"groups\":[{\"group_name\":\"color_basic\",\"tokens\":[\"red\",\"blue\",\"green\",\"yellow\"],\"filter\":{\"min_abs_mean\":0.2,\"top_k_per_layer\":12}}]}",
+            "default": "{\"groups\":[{\"group_name\":\"color_basic\",\"tokens\":\"red, blue, green, yellow\"}]}",
             "required": True,
             "rows": 10,
+        },
+        {
+            "name": "filter_json",
+            "label": "Filter Params JSON",
+            "type": "textarea",
+            "default": "[1]",
+            "required": False,
+            "rows": 3,
         },
     ],
 }

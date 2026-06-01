@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 # Study: Attribute Group Neurons
-# - Input: JSON text with named groups and token lists.
+# - Input: JSON text with named groups and token lists (no filter stored in groups file).
 # - Select one group, read each token's hidden-state matrix through token hidden-store (cache-first).
 # - Apply configurable filtering over neurons (algorithm placeholder, to be refined later).
 # - Export selected-neuron statistics + per-token values to CSV and return popup-friendly payload.
@@ -19,6 +19,7 @@ from ..config import load_config
 from ..runtime_api import RuntimeRequest, get_runtime_api, start_llama_api
 from ..probes.probe_hidden_state import get_or_build_random_token_mean_matrix
 from ..utils.attribute_groups_file import ensure_attribute_groups_file
+from ..utils.attribute_groups_file import format_attribute_groups_json
 from ..utils.token_hidden_store import (
     TokenHiddenStore,
     build_hidden_store_config,
@@ -73,16 +74,10 @@ def _normalize_groups_payload(raw_json: str) -> tuple[dict[str, Any] | None, str
             tokens = []
         if not tokens:
             return None, f"invalid_json_field:groups[{idx}].tokens_must_be_non_empty_array_or_csv_string"
-        filter_cfg = group.get("filter")
-        if filter_cfg is None:
-            filter_cfg = {}
-        if not isinstance(filter_cfg, dict):
-            return None, f"invalid_json_field:groups[{idx}].filter_must_be_object"
         clean_groups.append(
             {
                 "group_name": group_name,
                 "tokens": list(tokens),
-                "filter": dict(filter_cfg),
             }
         )
 
@@ -90,6 +85,60 @@ def _normalize_groups_payload(raw_json: str) -> tuple[dict[str, Any] | None, str
     if len(set(names)) != len(names):
         return None, "invalid_json_field:group_name_must_be_unique"
     return {"groups": clean_groups}, None
+
+
+def _parse_algorithm_ids(raw: Any) -> list[int]:
+    candidates = raw if isinstance(raw, list) else [raw]
+    out: list[int] = []
+    for item in candidates:
+        try:
+            aid = int(item)
+        except (TypeError, ValueError):
+            continue
+        if aid in (1, 2) and aid not in out:
+            out.append(aid)
+    if not out:
+        out = [1]
+    return out
+
+
+def _normalize_filter_payload(raw_filter_json: str) -> tuple[dict[str, Any] | None, str | None]:
+    text = str(raw_filter_json or "").strip()
+    if not text:
+        return {"algorithm": [1]}, None
+    try:
+        payload = json.loads(text)
+    except json.JSONDecodeError as exc:
+        return None, f"invalid_filter_json:{exc.msg}"
+    if isinstance(payload, list):
+        return {"algorithm": _parse_algorithm_ids(payload)}, None
+    if isinstance(payload, (int, float, str)):
+        return {"algorithm": _parse_algorithm_ids(payload)}, None
+    if not isinstance(payload, dict):
+        return None, "invalid_filter_json_type:must_be_object_or_array_or_number"
+    out: dict[str, Any] = {}
+    out["algorithm"] = _parse_algorithm_ids(payload.get("algorithm", [1]))
+    if "random1000_sample_size" in payload:
+        try:
+            out["random1000_sample_size"] = int(payload.get("random1000_sample_size"))
+        except (TypeError, ValueError):
+            pass
+    if "random1000_seed" in payload:
+        try:
+            out["random1000_seed"] = int(payload.get("random1000_seed"))
+        except (TypeError, ValueError):
+            pass
+    if "min_abs_mean" in payload:
+        try:
+            out["min_abs_mean"] = float(payload.get("min_abs_mean"))
+        except (TypeError, ValueError):
+            pass
+    if "top_k_per_layer" in payload:
+        try:
+            out["top_k_per_layer"] = int(payload.get("top_k_per_layer"))
+        except (TypeError, ValueError):
+            pass
+    return out, None
 
 
 def _pick_group(payload: dict[str, Any], selected_group: str) -> tuple[dict[str, Any] | None, str | None]:
@@ -234,19 +283,33 @@ def _select_neurons(
     abs_mean: np.ndarray,
 ) -> dict[int, np.ndarray]:
     filter_cfg = dict(group.get("filter") or {})
-    algo_raw = filter_cfg.get("algorithm", 1)
-    try:
-        algorithm = int(algo_raw)
-    except (TypeError, ValueError):
-        algorithm = 1
-    if algorithm == 1:
+    algorithm_ids = _parse_algorithm_ids(filter_cfg.get("algorithm", 1))
+    per_algo: list[dict[int, np.ndarray]] = []
+    for aid in algorithm_ids:
+        if aid == 1:
+            per_algo.append(_filter_algorithm_1(group=group, context=context, mean=mean, abs_mean=abs_mean))
+        elif aid == 2:
+            per_algo.append(_filter_algorithm_2(group=group, context=context, mean=mean, abs_mean=abs_mean))
+    if not per_algo:
         return _filter_algorithm_1(group=group, context=context, mean=mean, abs_mean=abs_mean)
-    if algorithm == 2:
-        return _filter_algorithm_2(group=group, abs_mean=abs_mean)
-    if algorithm == 3:
-        return _filter_algorithm_3(group=group, abs_mean=abs_mean)
-    # Unknown algorithm -> fallback to algorithm 1.
-    return _filter_algorithm_1(group=group, context=context, mean=mean, abs_mean=abs_mean)
+
+    merged: dict[int, np.ndarray] = {}
+    for one in per_algo:
+        for layer_idx, arr in one.items():
+            layer = int(layer_idx)
+            cur = merged.get(layer, np.array([], dtype=np.int32))
+            cat = np.concatenate([np.asarray(cur, dtype=np.int32), np.asarray(arr, dtype=np.int32)])
+            # OR semantics: deduplicate while preserving first-seen order.
+            seen: set[int] = set()
+            uniq: list[int] = []
+            for x in cat.tolist():
+                xi = int(x)
+                if xi in seen:
+                    continue
+                seen.add(xi)
+                uniq.append(xi)
+            merged[layer] = np.asarray(uniq, dtype=np.int32)
+    return merged
 
 
 def _filter_algorithm_1(
@@ -256,18 +319,7 @@ def _filter_algorithm_1(
     mean: np.ndarray,
     abs_mean: np.ndarray,
 ) -> dict[int, np.ndarray]:
-    """Filter algorithm v1 (current requested behavior).
-
-    Step 1 (candidate1):
-    - Fixed layer = 8.
-    - Compare group mean hidden-state vs random-1000-token mean baseline at layer 8.
-    - Keep neurons where abs(diff) > 0.2.
-    - Keep neurons where abs(group_mean) >= 0.1.
-
-    Step 2 (candidate2):
-    - For a candidate neuron, there exists at least one token such that:
-      abs(token_value) >= 0.2 and abs(token_value - group_mean) >= 0.2.
-    """
+    """Algorithm 1 = candidate1."""
     mean = np.asarray(mean, dtype=np.float32)
     abs_mean = np.asarray(abs_mean, dtype=np.float32)
     if abs_mean.ndim != 2 or mean.ndim != 2:
@@ -298,11 +350,33 @@ def _filter_algorithm_1(
     mean_abs_cond = np.abs(g) >= 0.1
     candidate1 = np.where(np.logical_and(np.logical_and(diff > 0.2, ratio_cond), mean_abs_cond))[0].astype(np.int32)
 
+    selected_by_layer[int(target_layer)] = candidate1
+    return selected_by_layer
+
+
+def _filter_algorithm_2(
+    *,
+    group: dict[str, Any],
+    context: dict[str, Any],
+    mean: np.ndarray,
+    abs_mean: np.ndarray,
+) -> dict[int, np.ndarray]:
+    """Algorithm 2 = candidate2."""
+    mean = np.asarray(mean, dtype=np.float32)
+    abs_mean = np.asarray(abs_mean, dtype=np.float32)
+    if abs_mean.ndim != 2 or mean.ndim != 2:
+        return {}
+    layers = int(mean.shape[0])
+    hidden_dim = int(mean.shape[1])
+    selected_by_layer: dict[int, np.ndarray] = {int(i): np.array([], dtype=np.int32) for i in range(layers)}
+    target_layer = 8
+    if target_layer < 0 or target_layer >= layers:
+        return selected_by_layer
+
     layers_by_token = dict((context or {}).get("layers_by_token") or {})
     token_ids = [int(x) for x in ((context or {}).get("token_ids") or [])]
     candidate2 = np.array([], dtype=np.int32)
     if token_ids and layers_by_token:
-        # token_matrix shape: [N, H] at target_layer
         token_rows: list[np.ndarray] = []
         for tid in token_ids:
             arr = np.asarray(layers_by_token.get(int(tid)), dtype=np.float32)
@@ -326,49 +400,7 @@ def _filter_algorithm_1(
                 if bool(np.any(cond)):
                     selected.append(int(nid))
             candidate2 = np.asarray(selected, dtype=np.int32)
-
-    # candidate1 OR candidate2, keep boundary/order and keep duplicates.
-    filtered_neurons = np.asarray(candidate1.tolist() + candidate2.tolist(), dtype=np.int32)
-    selected_by_layer[int(target_layer)] = filtered_neurons
-    return selected_by_layer
-
-
-def _filter_algorithm_2(
-    *,
-    group: dict[str, Any],
-    abs_mean: np.ndarray,
-) -> dict[int, np.ndarray]:
-    """Placeholder for filter algorithm v2."""
-    return _filter_algorithm_3(group=group, abs_mean=abs_mean)
-
-
-def _filter_algorithm_3(
-    *,
-    group: dict[str, Any],
-    abs_mean: np.ndarray,
-) -> dict[int, np.ndarray]:
-    """Legacy selection behavior (old default before algorithm split)."""
-    abs_mean = np.asarray(abs_mean, dtype=np.float32)
-    if abs_mean.ndim != 2:
-        return {}
-    layers = int(abs_mean.shape[0])
-    hidden_dim = int(abs_mean.shape[1])
-    filter_cfg = dict(group.get("filter") or {})
-    k = int(filter_cfg.get("top_k_per_layer", 0))
-    min_abs_mean = float(filter_cfg.get("min_abs_mean", 0.0))
-
-    selected_by_layer: dict[int, np.ndarray] = {}
-    for layer_idx in range(layers):
-        row_abs = abs_mean[layer_idx]
-        if k > 0 and k < hidden_dim:
-            idx = np.argpartition(-row_abs, k - 1)[:k]
-            selected = np.sort(idx.astype(np.int32))
-        else:
-            selected = np.arange(hidden_dim, dtype=np.int32)
-        if min_abs_mean > 0:
-            mask = row_abs[selected] >= min_abs_mean
-            selected = selected[mask]
-        selected_by_layer[int(layer_idx)] = selected
+    selected_by_layer[int(target_layer)] = candidate2
     return selected_by_layer
 
 
@@ -401,26 +433,15 @@ def _build_layer_matrix_rows(
     baseline_matrix: np.ndarray | None,
     mean_matrix: np.ndarray | None,
 ) -> list[dict[str, Any]]:
-    """Matrix rows: y-axis neuron_id, x-axis token text, cell = layer value."""
-    if not neuron_list:
+    """Matrix rows: y-axis token text, x-axis neuron_id, cell = layer value."""
+    if not neuron_list or not token_ids:
         return []
-    baseline = None
-    if baseline_matrix is not None:
-        arr = np.asarray(baseline_matrix, dtype=np.float32)
-        if arr.ndim == 2 and arr.shape[0] > int(target_layer):
-            baseline = arr
-    mean_ref = None
-    if mean_matrix is not None:
-        arr = np.asarray(mean_matrix, dtype=np.float32)
-        if arr.ndim == 2 and arr.shape[0] > int(target_layer):
-            mean_ref = arr
     rows: list[dict[str, Any]] = []
-    for neuron_id in neuron_list:
-        baseline_value = float(baseline[int(target_layer), int(neuron_id)]) if baseline is not None else 0.0
-        average_value = float(mean_ref[int(target_layer), int(neuron_id)]) if mean_ref is not None else 0.0
-        row: dict[str, Any] = {"neuron_id": int(neuron_id), "baseline": baseline_value, "average": average_value}
-        for tid, col in zip(token_ids, token_text_columns):
-            arr = np.asarray(layers_by_token[int(tid)], dtype=np.float32)
+    neuron_cols = [f"n{int(neuron_id)}" for neuron_id in neuron_list]
+    for tid, token_text in zip(token_ids, token_text_columns):
+        row: dict[str, Any] = {"token_id": int(tid), "token": str(token_text)}
+        arr = np.asarray(layers_by_token[int(tid)], dtype=np.float32)
+        for neuron_id, col in zip(neuron_list, neuron_cols):
             value = float(arr[int(target_layer), int(neuron_id)])
             row[col] = value
         rows.append(row)
@@ -460,6 +481,7 @@ def run_study(
     *,
     attribute_groups_json: str,
     selected_attribute_group: str = "",
+    filter_json: str = "",
     config: dict[str, Any] | None = None,
     config_path: str | Path = "configs/custom.yaml",
 ) -> dict[str, Any]:
@@ -477,7 +499,7 @@ def run_study(
             "summary_text": f"Attribute group JSON invalid: {parse_err}",
         }
     groups_file.write_text(
-        json.dumps(normalized_payload, ensure_ascii=False, separators=(",", ":")),
+        format_attribute_groups_json(normalized_payload),
         encoding="utf-8",
     )
 
@@ -493,13 +515,26 @@ def run_study(
             "summary_text": f"Group selection failed: {pick_err}. available={names}",
         }
 
+    filter_cfg, filter_err = _normalize_filter_payload(str(filter_json or ""))
+    if filter_cfg is None:
+        return {
+            "ok": False,
+            "reason": str(filter_err or "invalid_filter_json"),
+            "groups_file": str(groups_file),
+            "selected_attribute_group": str(group.get("group_name") or ""),
+            "ui_tasks": [{"name": "render_text_output", "value_key": "summary_text"}],
+            "summary_text": f"Filter JSON invalid: {filter_err}",
+        }
+    runtime_group = dict(group)
+    runtime_group["filter"] = dict(filter_cfg)
+
     api = _get_or_start_runtime_api(cfg)
     bundle = api.execute_model_call(RuntimeRequest(config=cfg, force_reload=False)).bundle
     store_cfg = build_hidden_store_config(cfg, bundle=bundle)
     store = TokenHiddenStore(store_cfg, bundle.tokenizer)
 
     context = _collect_group_context(
-        group=group,
+        group=runtime_group,
         bundle=bundle,
         store=store,
         config=cfg,
@@ -525,16 +560,14 @@ def run_study(
     filter_cfg = dict(group.get("filter") or {})
     min_abs_mean = float(filter_cfg.get("min_abs_mean", 0.0))
     top_k_per_layer = int(filter_cfg.get("top_k_per_layer", 0))
-    try:
-        filter_algorithm = int(filter_cfg.get("algorithm", 1))
-    except (TypeError, ValueError):
-        filter_algorithm = 1
+    algorithm_ids = _parse_algorithm_ids(filter_cfg.get("algorithm", 1))
+    filter_algorithm: int | list[int] = algorithm_ids[0] if len(algorithm_ids) == 1 else algorithm_ids
     mean, std, abs_mean = _compute_group_statistics(
         token_ids=token_ids,
         layers_by_token=layers_by_token,
     )
     selected_by_layer = _select_neurons(
-        group=group,
+        group=runtime_group,
         context=context,
         mean=mean,
         abs_mean=abs_mean,
@@ -588,7 +621,7 @@ def run_study(
         "neuron_list": [int(x) for x in neuron_list],
         "token_errors": token_errors,
         "rows_written": int(len(matrix_rows)),
-        "filter_algorithm": int(filter_algorithm),
+        "filter_algorithm": filter_algorithm,
         "csv_path": csv_path.as_posix(),
         "summary_text": summary,
         "ui_tasks": [{"name": "render_text_output", "value_key": "summary_text"}],
