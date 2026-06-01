@@ -71,32 +71,40 @@ def preload_hidden_store(bundle, config: dict[str, Any] | None = None) -> None:
 
 
 def preload_hidden_store_from_disk(config: dict[str, Any]) -> None:
-    """Main-startup preload: bind store object cache to concrete disk files."""
-    from transformers import AutoConfig, AutoTokenizer
+    """Main-startup lightweight hidden-store init: open/create files only.
 
-    model_cfg = dict((config or {}).get("model") or {})
-    model_path = model_cfg.get("model_name_or_path")
-    tokenizer_path = model_cfg.get("tokenizer_name_or_path") or model_path
-    if not model_path:
-        raise ValueError("Config requires model.model_name_or_path")
+    Important: do not load tokenizer/model config and do not scan/read big data files here.
+    Actual memmap/store object binding happens lazily on first real store use.
+    """
+    project_root = Path(__file__).resolve().parents[2]
+    hs_cfg = dict((config or {}).get("hidden_store") or {})
+    protocol = str(hs_cfg.get("protocol", "bos1_assistant0"))
+    # Keep path namespace consistent with token_hidden_store._storage_protocol_name
+    if protocol == "bos1_assistant0":
+        storage_protocol = "bos1_assistant0_userhdr"
+    elif protocol == "bos1_assistant1":
+        storage_protocol = "bos1_assistant1_chatgen"
+    else:
+        storage_protocol = protocol
 
-    tokenizer = AutoTokenizer.from_pretrained(
-        tokenizer_path,
-        trust_remote_code=bool(model_cfg.get("trust_remote_code", True)),
-    )
-    auto_cfg = AutoConfig.from_pretrained(
-        model_path,
-        trust_remote_code=bool(model_cfg.get("trust_remote_code", True)),
-    )
-    merged = dict(config or {})
-    hs_cfg = dict((merged.get("hidden_store") or {}))
-    hs_cfg.setdefault("n_layers", int(getattr(auto_cfg, "num_hidden_layers")) + 1)
-    hs_cfg.setdefault("hidden_dim", int(getattr(auto_cfg, "hidden_size")))
-    merged["hidden_store"] = hs_cfg
-    store_cfg = build_hidden_store_config(merged, bundle=None)
-    _ = _HIDDEN_STORE_RUNTIME.get_or_create(store_cfg, tokenizer)
+    data_tpl = str(hs_cfg.get("data_file", "data/cache/hidden_states.{protocol}.f16.bin"))
+    done_tpl = str(hs_cfg.get("progress_file", "data/cache/hidden_states.{protocol}.done.bin"))
+    data_file = (project_root / data_tpl.format(protocol=storage_protocol)).resolve()
+    done_file = (project_root / done_tpl.format(protocol=storage_protocol)).resolve()
+
+    data_file.parent.mkdir(parents=True, exist_ok=True)
+    done_file.parent.mkdir(parents=True, exist_ok=True)
+    if not data_file.exists():
+        data_file.touch()
+    if not done_file.exists():
+        done_file.touch()
+    # lightweight open/close to satisfy "just open file" warmup behavior
+    with data_file.open("ab"):
+        pass
+    with done_file.open("ab"):
+        pass
     print(
-        f"[startup] hidden_store initialized data={store_cfg.data_file} done={store_cfg.progress_file}",
+        f"[startup] hidden_store file-open only data={data_file} done={done_file}",
         file=sys.stderr,
     )
 

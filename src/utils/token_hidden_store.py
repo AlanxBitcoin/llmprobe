@@ -458,12 +458,6 @@ class TokenHiddenStore:
             elif int(token_id) != bos_id:
                 print(f"[hidden_store] token_id={token_id} ensure_bos_cache=hit bos_id={bos_id}")
 
-        # Recovery path: if data exists but done flag is stale, mark done and reuse.
-        if self._recover_done_from_data(token_id):
-            print(f"[hidden_store] token_id={token_id} cache=recovered_from_data")
-            recovered = self.get_all_layers(token_id)
-            if recovered is not None:
-                return recovered
         print(f"[hidden_store] token_id={token_id} cache=miss compute=1")
         computed = self._compute_layers(bundle, token_id)
         self._write_layers(token_id, computed)
@@ -504,14 +498,7 @@ class TokenHiddenStore:
                 if bos_id not in out and bos_id not in misses and any(t != bos_id for t in misses):
                     misses.insert(0, bos_id)
 
-        remaining: list[int] = []
-        for tid in misses:
-            if self._recover_done_from_data(tid):
-                recovered = self.get_all_layers(tid)
-                if recovered is not None:
-                    out[tid] = recovered
-                    continue
-            remaining.append(tid)
+        remaining: list[int] = list(misses)
 
         if remaining:
             batch_inputs = [self._build_protocol_input_ids(tid) for tid in remaining]
@@ -677,17 +664,6 @@ class TokenHiddenStore:
         self._data_mem.flush()
         self._done_mem.flush()
         self._dirty_writes = 0
-
-    def _recover_done_from_data(self, token_id: int) -> bool:
-        self._validate_token_id(token_id)
-        row = np.asarray(self._data_mem[token_id], dtype=np.float32)
-        # Hidden states are practically never all-zero; this rescues stale done maps.
-        if not np.any(row):
-            return False
-        self._done_mem[token_id] = 1
-        self._done_mem.flush()
-        self._token_cache[int(token_id)] = row
-        return True
 
     def _validate_token_id(self, token_id: int) -> None:
         if token_id < 0 or token_id >= self.token_count:

@@ -131,6 +131,14 @@ textarea {
   font-size: 12px;
 }
 
+.action-button.action-button-legacy {
+  color: #8f98a3;
+}
+
+.action-button.action-button-legacy span {
+  color: #a7afb9;
+}
+
 .form-pane h2 {
   margin: 0 0 6px;
   font-size: 18px;
@@ -240,7 +248,7 @@ button:disabled {
 }
 
 .csv-container {
-  max-height: 360px;
+  max-height: 1080px;
   overflow: auto;
   border: 1px solid var(--line);
   border-radius: 6px;

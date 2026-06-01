@@ -24,9 +24,11 @@ from src.runtime_api import RuntimeRequest, get_runtime_api, start_llama_api
 import torch
 from src.utils.layer_neurons_list_file import ensure_layer_neurons_list_file
 from src.utils.layer_neurons_list_file import load_layer_neurons_list_text
+from src.utils.attribute_groups_file import ensure_attribute_groups_file
+from src.utils.attribute_groups_file import load_attribute_groups_text
 
 from .registry import build_command_args, get_ui_action, list_ui_actions
-from .result_render import collect_recent_artifacts, newest_csv_preview
+from .result_render import collect_recent_artifacts, newest_csv_preview, preview_csv
 
 _RUN_LOCK = threading.Lock()
 _RUN_STATE: dict[str, Any] = {"action_id": None, "started_at": 0.0, "eta_seconds": 0.0}
@@ -86,13 +88,83 @@ def batch_options_payload(project_root: str | Path) -> dict[str, Any]:
 def layer_neurons_list_payload(project_root: str | Path) -> dict[str, Any]:
     try:
         path, text = load_layer_neurons_list_text(project_root)
-        return {"status": "ok", "path": str(path), "json_text": text}
+        normalized_text = text
+        try:
+            payload = json.loads(text)
+            compact_payload = _compact_layer_neurons_payload(payload)
+            normalized_text = json.dumps(compact_payload, ensure_ascii=False, separators=(",", ":"))
+            # Keep file canonical in compact form so textbox always shows compact format.
+            if normalized_text.strip() != text.strip():
+                path.write_text(normalized_text, encoding="utf-8")
+        except Exception:
+            # Keep raw text when JSON is invalid; UI should let user fix it.
+            normalized_text = text
+        return {"status": "ok", "path": str(path), "json_text": normalized_text}
+    except Exception as exc:  # noqa: BLE001
+        return {"status": "error", "error": str(exc), "json_text": ""}
+
+
+def attribute_groups_payload(project_root: str | Path) -> dict[str, Any]:
+    try:
+        path, text = load_attribute_groups_text(project_root)
+        normalized_text = text
+        try:
+            payload = json.loads(text)
+            normalized_text = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+            if normalized_text.strip() != text.strip():
+                path.write_text(normalized_text, encoding="utf-8")
+        except Exception:
+            normalized_text = text
+        return {"status": "ok", "path": str(path), "json_text": normalized_text}
     except Exception as exc:  # noqa: BLE001
         return {"status": "error", "error": str(exc), "json_text": ""}
 
 
 def actions_payload() -> dict[str, Any]:
     return {"actions": list_ui_actions()}
+
+
+def _compact_layer_neurons_payload(payload: Any) -> Any:
+    """
+    Normalize layer-neurons JSON into compact storage form:
+      neurons: [[nNeuron, value], ...]
+    Keeps backward compatibility for input parsing by accepting object rows too.
+    """
+    def compact_one_entry(entry: Any) -> Any:
+        if not isinstance(entry, dict):
+            return entry
+        out = dict(entry)
+        neurons = out.get("neurons")
+        if not isinstance(neurons, list):
+            return out
+        compact: list[Any] = []
+        for row in neurons:
+            if isinstance(row, (list, tuple)) and len(row) == 2:
+                compact.append([row[0], row[1]])
+                continue
+            if isinstance(row, dict):
+                if "nNeuron" in row and "value" in row:
+                    compact.append([row.get("nNeuron"), row.get("value")])
+                    continue
+                if "neuron" in row and "value" in row:
+                    compact.append([row.get("neuron"), row.get("value")])
+                    continue
+                if "n" in row and "v" in row:
+                    compact.append([row.get("n"), row.get("v")])
+                    continue
+            compact.append(row)
+        out["neurons"] = compact
+        return out
+
+    if isinstance(payload, dict) and isinstance(payload.get("lists"), list):
+        out = dict(payload)
+        out["lists"] = [compact_one_entry(x) for x in (payload.get("lists") or [])]
+        return out
+    if isinstance(payload, list):
+        return [compact_one_entry(x) for x in payload]
+    if isinstance(payload, dict):
+        return compact_one_entry(payload)
+    return payload
 
 
 def _prevalidate_and_save_layer_neurons_json(project_root: Path, params: dict[str, Any]) -> str | None:
@@ -103,9 +175,23 @@ def _prevalidate_and_save_layer_neurons_json(project_root: Path, params: dict[st
         payload = json.loads(raw)
     except json.JSONDecodeError as exc:
         return f"invalid_json:{exc.msg}"
-    # Format is valid: save immediately (normalized pretty JSON).
+    payload = _compact_layer_neurons_payload(payload)
+    # Format is valid: save immediately (normalized compact JSON, single line).
     target = ensure_layer_neurons_list_file(project_root)
-    target.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    target.write_text(json.dumps(payload, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
+    return None
+
+
+def _prevalidate_and_save_attribute_groups_json(project_root: Path, params: dict[str, Any]) -> str | None:
+    raw = str((params or {}).get("attribute_groups_json") or "").strip()
+    if not raw:
+        return "attribute_groups_json_required"
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        return f"invalid_json:{exc.msg}"
+    target = ensure_attribute_groups_file(project_root)
+    target.write_text(json.dumps(payload, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
     return None
 
 
@@ -119,6 +205,21 @@ def _ffn_history_files(project_root: str | Path) -> list[Path]:
     if not history_dir.exists():
         return []
     return sorted([p for p in history_dir.glob("*.csv") if p.is_file()], key=lambda p: p.stat().st_mtime, reverse=True)
+
+
+def _csv_preview_from_command_result(command_result: Any, max_rows: int = 200) -> dict[str, Any] | None:
+    if not isinstance(command_result, dict):
+        return None
+    heatmap = command_result.get("hidden_state_heatmap")
+    if not isinstance(heatmap, dict):
+        return None
+    csv_path = str(heatmap.get("csv_path") or "").strip()
+    if not csv_path:
+        return None
+    try:
+        return preview_csv(csv_path, max_rows=max_rows)
+    except Exception:
+        return None
 
 
 def _parse_ffn_history_name(name: str) -> dict[str, Any]:
@@ -675,6 +776,27 @@ def execute_ui_action(
                 "started_at": time.time(),
                 "finished_at": time.time(),
             }
+    if action.command == "run-attribute-group-neurons":
+        pre_err = _prevalidate_and_save_attribute_groups_json(root, params)
+        if pre_err:
+            return {
+                "status": "error",
+                "action": action.to_dict(),
+                "command": ["inprocess", "src.main", "--config", str(config_path), action.command],
+                "return_code": None,
+                "stdout": "",
+                "stderr": pre_err,
+                "artifacts": [],
+                "csv_preview": None,
+                "hidden_state_heatmap": {
+                    "ok": False,
+                    "reason": pre_err,
+                    "ui_tasks": [{"name": "render_text_output", "value_key": "summary_text"}],
+                    "summary_text": pre_err,
+                },
+                "started_at": time.time(),
+                "finished_at": time.time(),
+            }
     if action.command == "run-single-word-hidden-state-batch-average":
         upsert_batch_mapping(
             root,
@@ -739,6 +861,8 @@ def execute_ui_action(
             output_root = root / "data" / "outputs"
             artifacts = collect_recent_artifacts(output_root, since_timestamp=started_at)
             csv_preview = newest_csv_preview(artifacts)
+        if action.command == "run-attribute-group-neurons" and csv_preview is None:
+            csv_preview = _csv_preview_from_command_result(command_result, max_rows=max_csv_preview_rows)
         return {
             "status": "ok" if return_code == 0 else "error",
             "action": action.to_dict(),
@@ -789,6 +913,7 @@ def start_ui_action_task(
     if action.command == "run-layer-neurons":
         pre_err = _prevalidate_and_save_layer_neurons_json(root, params)
         if pre_err:
+            now = time.time()
             return {
                 "status": "error",
                 "action": action.to_dict(),
@@ -797,8 +922,23 @@ def start_ui_action_task(
                 "return_code": None,
                 "stdout": "",
                 "stderr": pre_err,
-                "started_at": started_at,
-                "finished_at": time.time(),
+                "started_at": now,
+                "finished_at": now,
+            }
+    if action.command == "run-attribute-group-neurons":
+        pre_err = _prevalidate_and_save_attribute_groups_json(root, params)
+        if pre_err:
+            now = time.time()
+            return {
+                "status": "error",
+                "action": action.to_dict(),
+                "command": ["inprocess", "src.main", "--config", str(config_path), action.command],
+                "task_id": None,
+                "return_code": None,
+                "stdout": "",
+                "stderr": pre_err,
+                "started_at": now,
+                "finished_at": now,
             }
     command_args = build_command_args(action, params)
     cmd = ["inprocess", "src.main", "--config", str(config_path), *command_args]
@@ -871,6 +1011,8 @@ def start_ui_action_task(
                 output_root = root / "data" / "outputs"
                 artifacts = collect_recent_artifacts(output_root, since_timestamp=started_at)
                 csv_preview = newest_csv_preview(artifacts)
+            if action.command == "run-attribute-group-neurons" and csv_preview is None:
+                csv_preview = _csv_preview_from_command_result(command_result, max_rows=max_csv_preview_rows)
 
             result = {
                 "status": "ok",

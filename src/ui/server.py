@@ -17,7 +17,9 @@ from urllib.parse import parse_qs
 
 from .routes import (
     actions_payload,
+    attribute_groups_payload,
     batch_options_payload,
+    upsert_batch_mapping,
     execute_chat_completion,
     execute_ui_action,
     get_ui_action_task,
@@ -78,6 +80,13 @@ def _run_fastapi_server(project_root: Path, config_path: Path, *, host: str, por
             return JSONResponse({"error": "File not found"}, status_code=404)
         return FileResponse(path, media_type="text/html; charset=utf-8")
 
+    @app.get("/popup")
+    async def popup_page():
+        path = template_dir / "popup.html"
+        if not path.exists():
+            return JSONResponse({"error": "File not found"}, status_code=404)
+        return FileResponse(path, media_type="text/html; charset=utf-8")
+
     @app.get("/api/actions")
     async def api_actions():
         return JSONResponse(actions_payload())
@@ -86,9 +95,25 @@ def _run_fastapi_server(project_root: Path, config_path: Path, *, host: str, por
     async def api_batches():
         return JSONResponse(batch_options_payload(project_root))
 
+    @app.post("/api/batches/upsert")
+    async def api_batches_upsert(payload: dict[str, Any] | None = Body(default=None)):
+        payload = payload or {}
+        upsert_batch_mapping(
+            project_root,
+            batch_name=str(payload.get("batch_name") or ""),
+            words_csv=str(payload.get("words_csv") or ""),
+        )
+        return JSONResponse({"status": "ok", **batch_options_payload(project_root)}, status_code=200)
+
     @app.get("/api/layer-neurons/list-json")
     async def api_layer_neurons_list_json():
         payload = layer_neurons_list_payload(project_root)
+        status = 200 if payload.get("status") == "ok" else 500
+        return JSONResponse(payload, status_code=status)
+
+    @app.get("/api/attribute-groups/json")
+    async def api_attribute_groups_json():
+        payload = attribute_groups_payload(project_root)
         status = 200 if payload.get("status") == "ok" else 500
         return JSONResponse(payload, status_code=status)
 
@@ -113,7 +138,7 @@ def _run_fastapi_server(project_root: Path, config_path: Path, *, host: str, por
         payload = payload or {}
         action_id = str(payload.get("action_id") or "")
         params = payload.get("params") or {}
-        if action_id in {"study_layer_neuron_logits_table", "study_layer_ffn_neuron_logits_table", "study_layer_neurons"}:
+        if action_id in {"study_layer_neuron_logits_table", "study_layer_ffn_neuron_logits_table", "study_layer_neurons", "study_attribute_group_neurons"}:
             result = start_ui_action_task(
                 action_id=action_id,
                 params=params,
@@ -237,6 +262,9 @@ def _make_handler(project_root: Path, config_path: Path) -> type[BaseHTTPRequest
             if path == "/":
                 self._send_file(template_dir / "index.html", "text/html; charset=utf-8")
                 return
+            if path == "/popup":
+                self._send_file(template_dir / "popup.html", "text/html; charset=utf-8")
+                return
             if path == "/api/actions":
                 self._send_json(actions_payload())
                 return
@@ -245,6 +273,10 @@ def _make_handler(project_root: Path, config_path: Path) -> type[BaseHTTPRequest
                 return
             if path == "/api/layer-neurons/list-json":
                 payload = layer_neurons_list_payload(project_root)
+                self._send_json(payload, status=200 if payload.get("status") == "ok" else 500)
+                return
+            if path == "/api/attribute-groups/json":
+                payload = attribute_groups_payload(project_root)
                 self._send_json(payload, status=200 if payload.get("status") == "ok" else 500)
                 return
             if path == "/api/history/layer-ffn-neuron/latest":
@@ -302,7 +334,7 @@ def _make_handler(project_root: Path, config_path: Path) -> type[BaseHTTPRequest
 
         def do_POST(self) -> None:  # noqa: N802
             parsed = urlparse(self.path)
-            if parsed.path not in {"/api/execute", "/api/chat"}:
+            if parsed.path not in {"/api/execute", "/api/chat", "/api/batches/upsert"}:
                 self._send_json({"error": "Not found"}, status=404)
                 return
             content_length = int(self.headers.get("Content-Length") or 0)
@@ -320,10 +352,17 @@ def _make_handler(project_root: Path, config_path: Path) -> type[BaseHTTPRequest
                         layer_neuron_change=payload.get("layer_neuron_change"),
                         ffn_neuron_change=payload.get("ffn_neuron_change"),
                     )
+                elif parsed.path == "/api/batches/upsert":
+                    upsert_batch_mapping(
+                        project_root,
+                        batch_name=str(payload.get("batch_name") or ""),
+                        words_csv=str(payload.get("words_csv") or ""),
+                    )
+                    result = {"status": "ok", **batch_options_payload(project_root)}
                 else:
                     action_id = str(payload.get("action_id") or "")
                     params = payload.get("params") or {}
-                    if action_id in {"study_layer_neuron_logits_table", "study_layer_ffn_neuron_logits_table", "study_layer_neurons"}:
+                    if action_id in {"study_layer_neuron_logits_table", "study_layer_ffn_neuron_logits_table", "study_layer_neurons", "study_attribute_group_neurons"}:
                         result = start_ui_action_task(
                             action_id=action_id,
                             params=params,

@@ -19,6 +19,8 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 os.environ["TRANSFORMERS_VERBOSITY"] = "error"
+# Always use non-GUI matplotlib backend to avoid Tk main-loop/thread teardown issues.
+os.environ.setdefault("MPLBACKEND", "Agg")
 
 # 1. 关日志、关梯度（必开）
 os.environ["TRANSFORMERS_VERBOSITY"] = "error"
@@ -48,6 +50,7 @@ from src.probes.probe_attribute import (
 )
 from src.runtime_api import start_llama_api
 from src.study import (
+    run_attribute_group_neurons_study,
     run_attribute_probe_study,
     run_layer_ffn_neuron_logits_table_study,
     run_layer_neuron_logits_table_study,
@@ -59,7 +62,7 @@ from src.study import (
     run_single_word_top_100_neurons_study,
     run_token_diff_study,
 )
-from src.utils.extract_hidden import preload_hidden_store, preload_hidden_store_from_disk
+from src.utils.extract_hidden import preload_hidden_store_from_disk
 from src.utils.token_hidden_store import build_store_for_protocol
 from src.utils.utils import write_json
 
@@ -232,6 +235,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Prefix sentence used when --use-prefix-context=true.",
     )
     layer_neurons.add_argument(
+        "--use-random1000-baseline-no-prefix",
+        type=_parse_bool_flag,
+        default=True,
+        help="When --use-prefix-context=false, use 1000-token no-prefix baseline as starting hidden state.",
+    )
+    layer_neurons.add_argument(
         "--selected-list-name",
         type=str,
         default="",
@@ -241,7 +250,24 @@ def build_parser() -> argparse.ArgumentParser:
         "--layer-neuron-list-json",
         type=str,
         default="",
-        help="JSON payload: {list_name,nLayer,neurons:[{nNeuron,value}]}",
+        help="JSON payload (compact preferred): {list_name,nLayer,neurons:[[nNeuron,value],...]}",
+    )
+
+    attr_group_neurons = subparsers.add_parser(
+        "run-attribute-group-neurons",
+        help="Load one attribute group from JSON, collect token hidden-cache stats, and export selected neurons to CSV.",
+    )
+    attr_group_neurons.add_argument(
+        "--selected-attribute-group",
+        type=str,
+        default="",
+        help="Selected attribute group name in JSON (required when multiple groups exist).",
+    )
+    attr_group_neurons.add_argument(
+        "--attribute-groups-json",
+        type=str,
+        default="",
+        help="JSON payload: {groups:[{group_name,tokens,filter},...]}",
     )
 
     combo = subparsers.add_parser("run-word-sum", help="Analyze the layer-8 summed representation of two or more words")
@@ -318,7 +344,9 @@ def start_app(
         ui_thread.start()
 
         if should_start_llama:
-            _start_llama_background(effective_config, preload_hidden=bool(hidden_store_cfg.get("preload_on_boot", True)))
+            # Model/tokenizer warmup should stay enabled, but hidden-store memmap preload
+            # is intentionally skipped on boot to avoid heavy disk scan/read at startup.
+            _start_llama_background(effective_config)
 
         if should_init_hidden_store_disk:
             _start_hidden_store_disk_init_background(effective_config)
@@ -339,12 +367,7 @@ def start_app(
             print(f"[startup] hidden_store disk init skipped: {exc}")
 
     if should_start_llama:
-        api = start_llama_api(effective_config)
-        if bool(hidden_store_cfg.get("preload_on_boot", True)):
-            try:
-                preload_hidden_store(api.get_bundle(), effective_config)
-            except Exception as exc:  # noqa: BLE001 - preload failure should not block startup.
-                print(f"[startup] hidden_store preload skipped: {exc}")
+        _ = start_llama_api(effective_config)
     print("No server started because ui.enabled/start_server_on_boot is false.")
 
 
@@ -360,16 +383,11 @@ def _start_hidden_store_disk_init_background(config: dict[str, Any]) -> None:
     thread.start()
 
 
-def _start_llama_background(config: dict[str, Any], *, preload_hidden: bool) -> None:
+def _start_llama_background(config: dict[str, Any]) -> None:
     def _runner() -> None:
         try:
             print("[startup] background model warmup started...")
-            api = start_llama_api(config)
-            if preload_hidden:
-                try:
-                    preload_hidden_store(api.get_bundle(), config)
-                except Exception as exc:  # noqa: BLE001 - preload failure should not break warmup thread.
-                    print(f"[startup] hidden_store preload skipped: {exc}")
+            _ = start_llama_api(config)
             print("[startup] background model warmup finished.")
         except Exception as exc:  # noqa: BLE001
             print(f"[startup] background model warmup failed: {exc}")
@@ -460,6 +478,16 @@ def _execute_parsed_args(args: argparse.Namespace, config: dict[str, Any]) -> di
             selected_list_name=str(args.selected_list_name or ""),
             use_prefix_context=bool(args.use_prefix_context),
             prefix_text=str(args.prefix_text or ""),
+            use_random1000_baseline_no_prefix=bool(args.use_random1000_baseline_no_prefix),
+            config=config,
+            config_path=args.config,
+        )
+        return {"hidden_state_heatmap": heatmap}
+
+    if args.command == "run-attribute-group-neurons":
+        heatmap = run_attribute_group_neurons_study(
+            attribute_groups_json=str(args.attribute_groups_json or ""),
+            selected_attribute_group=str(args.selected_attribute_group or ""),
             config=config,
             config_path=args.config,
         )

@@ -318,6 +318,7 @@ def run_study(
     selected_list_name: str = "",
     use_prefix_context: bool = False,
     prefix_text: str = "",
+    use_random1000_baseline_no_prefix: bool = True,
     config: dict[str, Any] | None = None,
     config_path: str | Path = "configs/custom.yaml",
 ) -> dict[str, Any]:
@@ -468,23 +469,29 @@ def run_study(
         input_ids = torch.tensor([input_ids_list], dtype=torch.long, device=device)
         prefix_token_count = int(len(prefix_ctx.get("prefix_token_ids") or []))
     else:
-        if prefix_attn_matrix is None:
-            return {
-                "ok": False,
-                "reason": "prefix_attn_ref_unavailable_for_no_prefix",
-                "error": str(prefix_attn_error or "unknown"),
-                "list_file": str(list_file),
-                "matrix": [],
-                "heatmaps": [],
-                "top_logits": [],
-                "ui_tasks": [
-                    {"name": "render_heatmap", "value_key": "heatmaps"},
-                    {"name": "render_logits", "value_key": "top_logits"},
-                ],
-            }
-        # No-prefix mode baseline:
-        # start from zeros, then use 1000-token averaged prefix-symbol attention baseline.
-        matrix_ref = np.asarray(prefix_attn_matrix, dtype=np.float32).copy()
+        use_random1000_baseline_flag = bool(use_random1000_baseline_no_prefix)
+        if use_random1000_baseline_flag:
+            if prefix_attn_matrix is None:
+                return {
+                    "ok": False,
+                    "reason": "prefix_attn_ref_unavailable_for_no_prefix",
+                    "error": str(prefix_attn_error or "unknown"),
+                    "list_file": str(list_file),
+                    "matrix": [],
+                    "heatmaps": [],
+                    "top_logits": [],
+                    "ui_tasks": [
+                        {"name": "render_heatmap", "value_key": "heatmaps"},
+                        {"name": "render_logits", "value_key": "top_logits"},
+                    ],
+                }
+            # No-prefix mode baseline (optional):
+            # start from 1000-token averaged prefix-symbol attention baseline.
+            matrix_ref = np.asarray(prefix_attn_matrix, dtype=np.float32).copy()
+        else:
+            # No-prefix mode without 1000-token baseline:
+            # start from pure zeros, still keep context token attention in continuation.
+            matrix_ref = np.zeros((num_layers + 1, hidden_dim), dtype=np.float32)
         base_vector = torch.as_tensor(matrix_ref[layer_idx + 1], dtype=model_dtype, device=device).flatten()
         context_ids = _build_no_prefix_context_input_ids(
             tokenizer,
@@ -597,6 +604,7 @@ def run_study(
         "intervention_layer": int(layer_number),
         "applied_neurons": int(len(neurons)),
         "use_prefix_context": bool(prefix_enabled),
+        "use_random1000_baseline_no_prefix": bool(use_random1000_baseline_no_prefix),
         "prefix_text": str(prefix_text or ""),
         "prefix_token_count": int(prefix_token_count),
         "random_ref_source": random_source,

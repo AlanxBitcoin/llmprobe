@@ -57,6 +57,12 @@ FORM_SCHEMAS: dict[str, list[dict[str, Any]]] = {
         {"name": "use_prefix_context", "label": "Use Prefix Context", "type": "checkbox", "default": False},
         {"name": "prefix_text", "label": "Prefix Sentence", "type": "text", "default": "The apple is red.", "required": False},
         {
+            "name": "use_random1000_baseline_no_prefix",
+            "label": "Use 1000-Token Baseline (No Prefix)",
+            "type": "checkbox",
+            "default": True,
+        },
+        {
             "name": "selected_list_name",
             "label": "Selected List Name",
             "type": "text",
@@ -67,7 +73,7 @@ FORM_SCHEMAS: dict[str, list[dict[str, Any]]] = {
             "name": "layer_neuron_list_json",
             "label": "Layer Neuron List JSON",
             "type": "textarea",
-            "default": "{\n  \"lists\": [\n    {\n      \"list_name\": \"example_a\",\n      \"nLayer\": 30,\n      \"neurons\": [\n        [45, 20.0],\n        [1024, -5.0]\n      ]\n    },\n    {\n      \"list_name\": \"example_b\",\n      \"nLayer\": 31,\n      \"neurons\": [\n        [300, 8.0]\n      ]\n    }\n  ]\n}",
+            "default": "{\"lists\":[{\"list_name\":\"example_a\",\"nLayer\":30,\"neurons\":[[45,20.0],[1024,-5.0]]},{\"list_name\":\"example_b\",\"nLayer\":31,\"neurons\":[[300,8.0]]}]}",
             "required": True,
             "rows": 12,
         },
@@ -94,6 +100,23 @@ FORM_SCHEMAS: dict[str, list[dict[str, Any]]] = {
     ],
     "attribute_probe_form": [
         {"name": "attribute_file", "label": "Attribute CSV", "type": "text", "default": "data/word_attributes.csv"},
+    ],
+    "attribute_group_neurons_form": [
+        {
+            "name": "selected_attribute_group",
+            "label": "Selected Attribute Group",
+            "type": "text",
+            "default": "",
+            "required": False,
+        },
+        {
+            "name": "attribute_groups_json",
+            "label": "Attribute Groups JSON",
+            "type": "textarea",
+            "default": "{\"groups\":[{\"group_name\":\"color_basic\",\"tokens\":[\"red\",\"blue\",\"green\",\"yellow\"],\"filter\":{\"min_abs_mean\":0.2,\"top_k_per_layer\":12}}]}",
+            "required": True,
+            "rows": 10,
+        },
     ],
 }
 

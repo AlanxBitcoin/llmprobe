@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Study Result</title>
+    <link rel="stylesheet" href="/static/app.css" />
+    <style>
+      body { font-family: Segoe UI, Arial, sans-serif; margin: 12px; color: #17202a; }
+      .muted { color: #617080; }
+      .ok { color: #2d7d4f; }
+      .error { color: #a83d3d; }
+      .box { border: 1px solid #d7dde4; border-radius: 6px; padding: 10px; margin: 10px 0; }
+      .scroll { overflow: auto; max-height: 520px; border: 1px solid #d7dde4; border-radius: 6px; }
+    </style>
+  </head>
+  <body>
+    <h2>Study Result</h2>
+    <div id="summary" class="box"></div>
+    <div id="hidden" class="box"></div>
+    <div id="csv" class="box"></div>
+    <div id="artifacts" class="box"></div>
+    <script src="/static/app.popup.js"></script>
+    <script src="/static/app.popup.csv.js"></script>
+    <script src="/static/app.popup.heatmap.js"></script>
+  </body>
+</html>

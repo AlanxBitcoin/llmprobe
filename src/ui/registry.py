@@ -146,6 +146,14 @@ UI_ACTIONS: dict[str, UIAction] = {
         command="run-attribute-probe",
         form_schema="attribute_probe_form",
     ),
+    "study_attribute_group_neurons": UIAction(
+        id="study_attribute_group_neurons",
+        label="Attribute Group Neurons",
+        description="Load one attribute group JSON, analyze cached token hidden states, and export selected neurons to CSV.",
+        kind="study",
+        command="run-attribute-group-neurons",
+        form_schema="attribute_group_neurons_form",
+    ),
 }
 
 
@@ -232,6 +240,12 @@ def build_command_args(action: UIAction, params: dict[str, Any]) -> list[str]:
         use_prefix_context = params.get("use_prefix_context")
         use_prefix_context_flag = bool(use_prefix_context) if use_prefix_context is not None else False
         prefix_text = str(params.get("prefix_text") or "The apple is red.")
+        use_random1000_baseline_no_prefix = params.get("use_random1000_baseline_no_prefix")
+        use_random1000_baseline_no_prefix_flag = (
+            bool(use_random1000_baseline_no_prefix)
+            if use_random1000_baseline_no_prefix is not None
+            else True
+        )
         layer_neuron_list_json = str(params.get("layer_neuron_list_json") or "")
         selected_list_name = str(params.get("selected_list_name") or "")
         return [
@@ -240,6 +254,8 @@ def build_command_args(action: UIAction, params: dict[str, Any]) -> list[str]:
             "true" if use_prefix_context_flag else "false",
             "--prefix-text",
             prefix_text,
+            "--use-random1000-baseline-no-prefix",
+            "true" if use_random1000_baseline_no_prefix_flag else "false",
             "--selected-list-name",
             selected_list_name,
             "--layer-neuron-list-json",
@@ -282,5 +298,13 @@ def build_command_args(action: UIAction, params: dict[str, Any]) -> list[str]:
             action.command,
             "--attribute-file",
             str(params.get("attribute_file") or "data/word_attributes.csv"),
+        ]
+    if action.command == "run-attribute-group-neurons":
+        return [
+            action.command,
+            "--selected-attribute-group",
+            str(params.get("selected_attribute_group") or ""),
+            "--attribute-groups-json",
+            str(params.get("attribute_groups_json") or ""),
         ]
     return [action.command]

@@ -11,6 +11,7 @@ if "MPLCONFIGDIR" not in os.environ:
     mpl_dir = Path(".mplconfig")
     mpl_dir.mkdir(parents=True, exist_ok=True)
     os.environ["MPLCONFIGDIR"] = str(mpl_dir.resolve())
+os.environ.setdefault("MPLBACKEND", "Agg")
 
 import matplotlib.pyplot as plt
 import networkx as nx
