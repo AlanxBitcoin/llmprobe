@@ -66,6 +66,14 @@ UI_ACTIONS: dict[str, UIAction] = {
         command="run-token-diff",
         form_schema="token_diff_form",
     ),
+    "study_qk_params": UIAction(
+        id="study_qk_params",
+        label="QK Params",
+        description="Render per-layer Q-head vs K-head cosine heatmaps from attention projection parameters.",
+        kind="study",
+        command="run-qk-params",
+        form_schema="qk_params_form",
+    ),
     "study_single_word_top_100_neurons": UIAction(
         id="study_single_word_top_100_neurons",
         label="Single Word Top 100 Neurons",
@@ -204,6 +212,21 @@ def build_command_args(action: UIAction, params: dict[str, Any]) -> list[str]:
             action.command,
             str(params.get("token_a") or "apple"),
             str(params.get("token_b") or "banana"),
+        ]
+    if action.command == "run-qk-params":
+        view_by_layer = params.get("view_by_layer")
+        view_by_layer_flag = bool(view_by_layer) if view_by_layer is not None else True
+        view_by_head = params.get("view_by_head")
+        view_by_head_flag = bool(view_by_head) if view_by_head is not None else False
+        selected_layer = params.get("selected_layer")
+        return [
+            action.command,
+            "--view-by-layer",
+            "true" if view_by_layer_flag else "false",
+            "--view-by-head",
+            "true" if view_by_head_flag else "false",
+            "--selected-layer",
+            str(1 if selected_layer is None else selected_layer),
         ]
     if action.command == "run-single-word-top-100-neurons":
         top_k_neurons = params.get("top_k_neurons")

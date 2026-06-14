@@ -85,7 +85,7 @@ function renderHeatmapIntoDoc(doc, container, heatmap) {
           // 3) value_key -> {title,matrix}
           // 3) fallback to heatmap.heatmaps / heatmap.matrix
           if (Array.isArray(value) && value.length > 0 && Array.isArray(value[0]) && Array.isArray(value[0][0]) === false) {
-            const ok = renderOneHeatmapIntoDoc(doc, container, value, "Hidden State Heatmap", heatmapSyncGroup);
+            const ok = renderOneHeatmapIntoDoc(doc, container, value, "Hidden State Heatmap", heatmapSyncGroup, null);
             renderedHeatmap = renderedHeatmap || ok;
             return;
           }
@@ -97,6 +97,7 @@ function renderHeatmapIntoDoc(doc, container, heatmap) {
                 hm.matrix,
                 String(hm.title || `Heatmap ${idx + 1}`),
                 heatmapSyncGroup,
+                hm,
               );
               renderedHeatmap = renderedHeatmap || ok;
             });
@@ -109,6 +110,7 @@ function renderHeatmapIntoDoc(doc, container, heatmap) {
               value.matrix,
               String(value.title || "Hidden State Heatmap"),
               heatmapSyncGroup,
+              value,
             );
             renderedHeatmap = renderedHeatmap || ok;
             return;
@@ -123,6 +125,7 @@ function renderHeatmapIntoDoc(doc, container, heatmap) {
               hm && Array.isArray(hm.matrix) ? hm.matrix : [],
               String((hm && hm.title) || `Heatmap ${idx + 1}`),
               heatmapSyncGroup,
+              hm,
             );
             renderedHeatmap = renderedHeatmap || ok;
           });
@@ -191,6 +194,7 @@ function renderHeatmapIntoDoc(doc, container, heatmap) {
           hm && Array.isArray(hm.matrix) ? hm.matrix : [],
           String((hm && hm.title) || `Heatmap ${hmIdx + 1}`),
           heatmapSyncGroup,
+          hm,
         );
         renderedHeatmap = renderedHeatmap || ok;
       });
@@ -221,6 +225,7 @@ function renderHeatmapIntoDoc(doc, container, heatmap) {
       hm && Array.isArray(hm.matrix) ? hm.matrix : [],
       String((hm && hm.title) || `Heatmap ${hmIdx + 1}`),
       heatmapSyncGroup,
+      hm,
     );
   });
   renderTopLogitsTableIntoDoc(doc, container, heatmap.top_logits || [], heatmap, "Top 15 Logits (with cosine similarity)", "logits_source", "logits_error");
@@ -252,10 +257,15 @@ function renderTextOutputIntoDoc(doc, container, text, heatmap) {
   container.appendChild(pre);
 }
 
-function renderOneHeatmapIntoDoc(doc, container, matrix, titleText, syncGroup) {
+function renderOneHeatmapIntoDoc(doc, container, matrix, titleText, syncGroup, meta) {
   const rows = Number(Array.isArray(matrix) ? matrix.length : 0);
   const cols = Number(rows > 0 && Array.isArray(matrix[0]) ? matrix[0].length : 0);
   if (!rows || !cols) return false;
+  const m = meta && typeof meta === "object" ? meta : {};
+  const hoverXLabel = String(m.hover_x_label || "neuron");
+  const hoverYLabel = String(m.hover_y_label || "layer");
+  const hoverXOffset = Number(m.hover_x_offset || 0);
+  const hoverYOffset = Number(m.hover_y_offset || 0);
 
   const originalMatrix = new Array(rows);
   for (let r = 0; r < rows; r += 1) {
@@ -440,7 +450,9 @@ function renderOneHeatmapIntoDoc(doc, container, matrix, titleText, syncGroup) {
     const active = getActiveMatrix();
     const row = active[y] || [];
     const value = Number(row[x] || 0);
-    hoverMeta.textContent = `Hover: X=${x} (neuron), Y=${y} (layer), value=${value.toFixed(6)}`;
+    const xId = Number.isFinite(hoverXOffset) ? (x + hoverXOffset) : x;
+    const yId = Number.isFinite(hoverYOffset) ? (y + hoverYOffset) : y;
+    hoverMeta.textContent = `Hover: X=${xId} (${hoverXLabel}), Y=${yId} (${hoverYLabel}), value=${value.toFixed(6)}`;
   }
 
   function redrawBase() {

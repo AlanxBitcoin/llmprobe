@@ -41,6 +41,11 @@ FORM_SCHEMAS: dict[str, list[dict[str, Any]]] = {
         {"name": "token_a", "label": "Token A", "type": "text", "default": "apple", "required": True},
         {"name": "token_b", "label": "Token B", "type": "text", "default": "banana", "required": True},
     ],
+    "qk_params_form": [
+        {"name": "view_by_layer", "label": "按层看 (Layer x Dim)", "type": "checkbox", "default": True},
+        {"name": "view_by_head", "label": "按头看 (Layer x Head)", "type": "checkbox", "default": False},
+        {"name": "selected_layer", "label": "层号 (1-based)", "type": "number", "default": 1, "min": 1, "step": 1},
+    ],
     "single_word_top_100_neurons_form": [
         {"name": "word", "label": "Word", "type": "text", "default": "apple", "required": True},
         {"name": "top_k_neurons", "label": "Top K Neurons", "type": "number", "default": 100, "min": 1},

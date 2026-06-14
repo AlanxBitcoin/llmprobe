@@ -55,6 +55,7 @@ from src.study import (
     run_layer_ffn_neuron_logits_table_study,
     run_layer_neuron_logits_table_study,
     run_layer_neurons_study,
+    run_qk_params_study,
     run_linear_probe_study,
     run_sentence_next_word_study,
     run_single_word_hidden_state_study,
@@ -169,6 +170,30 @@ def build_parser() -> argparse.ArgumentParser:
     )
     token_diff.add_argument("token_a", help="Token A text")
     token_diff.add_argument("token_b", help="Token B text")
+
+    subparsers.add_parser(
+        "run-qk-params",
+        help="Render model Q/K projection-parameter heatmaps (Q-head vs K-head cosine per layer).",
+    )
+    qk_params = subparsers.choices["run-qk-params"]
+    qk_params.add_argument(
+        "--view-by-layer",
+        type=_parse_bool_flag,
+        default=True,
+        help="Whether to render layer x hidden-dim heatmaps (true/false).",
+    )
+    qk_params.add_argument(
+        "--view-by-head",
+        type=_parse_bool_flag,
+        default=False,
+        help="Whether to render layer x head heatmaps (true/false).",
+    )
+    qk_params.add_argument(
+        "--selected-layer",
+        type=int,
+        default=1,
+        help="Selected decoder layer number, 1-based.",
+    )
 
     top100 = subparsers.add_parser(
         "run-single-word-top-100-neurons",
@@ -456,6 +481,16 @@ def _execute_parsed_args(args: argparse.Namespace, config: dict[str, Any]) -> di
         heatmap = run_token_diff_study(
             token_a=str(args.token_a or ""),
             token_b=str(args.token_b or ""),
+            config=config,
+            config_path=args.config,
+        )
+        return {"hidden_state_heatmap": heatmap}
+
+    if args.command == "run-qk-params":
+        heatmap = run_qk_params_study(
+            view_by_layer=bool(args.view_by_layer),
+            view_by_head=bool(args.view_by_head),
+            selected_layer=int(args.selected_layer),
             config=config,
             config_path=args.config,
         )
