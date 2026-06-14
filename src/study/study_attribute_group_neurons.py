@@ -1,10 +1,13 @@
 from __future__ import annotations
 
-# Study: Attribute Group Neurons
-# - Input: JSON text with named groups and token lists (no filter stored in groups file).
-# - Select one group, read each token's hidden-state matrix through token hidden-store (cache-first).
-# - Apply configurable filtering over neurons (algorithm placeholder, to be refined later).
-# - Export selected-neuron statistics + per-token values to CSV and return popup-friendly payload.
+"""按属性词组做神经元统计分析。
+
+功能:
+- 从属性组配置中读取目标词组及词元列表。
+- 通过 token hidden store（缓存优先）批量获取每个词元的隐藏状态矩阵。
+- 依据过滤参数筛选神经元并统计结果。
+- 导出 CSV，并返回可直接用于前端弹窗展示的结构化数据。
+"""
 
 from pathlib import Path
 from typing import Any

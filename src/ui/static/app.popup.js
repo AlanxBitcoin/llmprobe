@@ -14,6 +14,207 @@ function renderBusySummary(node, message) {
   node.innerHTML = `<div class="muted" style="display:flex;align-items:center;gap:8px;"><span aria-hidden="true" style="width:14px;height:14px;border:2px solid #c5cfda;border-top-color:#2d7d4f;border-radius:50%;display:inline-block;animation:spin 0.8s linear infinite;"></span><span>${escapeHtml(String(message || "Running ..."))}</span></div>`;
 }
 
+function neuronThresholdStateStore() {
+  if (typeof window === "undefined") return {};
+  if (!window.__neuronLogitsThresholdState || typeof window.__neuronLogitsThresholdState !== "object") {
+    window.__neuronLogitsThresholdState = {};
+  }
+  return window.__neuronLogitsThresholdState;
+}
+
+function neuronThresholdStateKey(payload) {
+  const p = payload && typeof payload === "object" ? payload : {};
+  const layer = Number(p.intervention_layer);
+  const activation = Number(p.activation_value);
+  const reverse = Boolean(p.reverse);
+  const usePrefix = Boolean(p.use_prefix_context);
+  const prefixText = String(p.prefix_text || "");
+  return [
+    "neuron_logits_threshold",
+    Number.isFinite(layer) ? String(layer) : "-",
+    Number.isFinite(activation) ? activation.toFixed(6) : "-",
+    reverse ? "1" : "0",
+    usePrefix ? "1" : "0",
+    prefixText,
+  ].join("|");
+}
+
+function renderNeuronLogitsTableIntoDoc(doc, container, rows, payload) {
+  const title = doc.createElement("h3");
+  title.textContent = "Neuron -> Top 15 Logits Table";
+  container.appendChild(title);
+
+  const layer = Number(payload && payload.intervention_layer);
+  const activation = Number(payload && payload.activation_value);
+  const topK = Number(payload && payload.top_k);
+  const hiddenDim = Number(payload && payload.hidden_dim);
+  const usePrefix = Boolean(payload && payload.use_prefix_context);
+  const prefixText = String((payload && payload.prefix_text) || "").trim();
+  const prefixTokenCount = Number(payload && payload.prefix_token_count);
+  const thresholdStore = neuronThresholdStateStore();
+  const thresholdKey = neuronThresholdStateKey(payload);
+  const rememberedThreshold = Number(thresholdStore[thresholdKey]);
+  let threshold = Number.isFinite(rememberedThreshold)
+    ? rememberedThreshold
+    : Number(payload && payload.threshold);
+  if (!Number.isFinite(threshold)) threshold = 15.0;
+  const returnedRows = Number(payload && payload.returned_rows);
+  const filteredRows = Number(payload && payload.filtered_out_rows);
+  const meta = doc.createElement("div");
+  meta.className = "muted";
+  meta.textContent = `layer=${Number.isFinite(layer) ? layer : "-"}, activation=${Number.isFinite(activation) ? activation : "-"}, threshold=${threshold.toFixed(3)}, top_k=${Number.isFinite(topK) ? topK : "-"}, hidden_dim=${Number.isFinite(hiddenDim) ? hiddenDim : "-"}, returned=${Number.isFinite(returnedRows) ? returnedRows : "-"}, filtered=${Number.isFinite(filteredRows) ? filteredRows : "-"}`;
+  container.appendChild(meta);
+  const prefixMeta = doc.createElement("div");
+  prefixMeta.className = "muted";
+  if (usePrefix) {
+    const tokenNote = Number.isFinite(prefixTokenCount) ? `, prefix_token_count=${prefixTokenCount}` : "";
+    prefixMeta.textContent = `use_prefix_context=true${tokenNote}, prefix_text=${prefixText || "-"}`;
+  } else {
+    prefixMeta.textContent = "use_prefix_context=false";
+  }
+  container.appendChild(prefixMeta);
+
+  const controls = doc.createElement("div");
+  controls.className = "muted";
+  controls.style.marginTop = "6px";
+  controls.style.marginBottom = "6px";
+  const thresholdLabel = doc.createElement("span");
+  thresholdLabel.textContent = "Logit Threshold ";
+  const thresholdInput = doc.createElement("input");
+  thresholdInput.type = "number";
+  thresholdInput.min = "-1000";
+  thresholdInput.max = "1000";
+  thresholdInput.step = "1";
+  thresholdInput.value = threshold.toFixed(3);
+  thresholdInput.style.width = "100px";
+  controls.appendChild(thresholdLabel);
+  controls.appendChild(thresholdInput);
+  container.appendChild(controls);
+
+  const isBatched = Array.isArray(rows) && rows.length > 0 && rows[0] && typeof rows[0] === "object" && Array.isArray(rows[0].rows);
+  if (!Array.isArray(rows) || rows.length === 0) {
+    const empty = doc.createElement("div");
+    empty.className = "muted";
+    empty.textContent = "No neuron logits rows returned.";
+    container.appendChild(empty);
+    return;
+  }
+
+  function rowPassesThreshold(row) {
+    const top = Array.isArray(row && row.top_logits) ? row.top_logits : [];
+    if (!top.length) return false;
+    const v = Number(top[0] && top[0].logit);
+    return Number.isFinite(v) && v >= threshold;
+  }
+
+  function buildTableForRows(tableRows) {
+    const safeRows = Array.isArray(tableRows) ? tableRows : [];
+    const filteredRowsNow = safeRows.filter((r) => rowPassesThreshold(r));
+    const effectiveTopK = Number.isFinite(topK) && topK > 0
+      ? Math.floor(topK)
+      : Math.max(...filteredRowsNow.map((r) => Array.isArray(r && r.top_logits) ? r.top_logits.length : 0), 0);
+
+    const wrap = doc.createElement("div");
+    wrap.className = "scroll";
+    const table = doc.createElement("table");
+    table.style.tableLayout = "fixed";
+    table.style.width = "100%";
+    const thead = doc.createElement("thead");
+    const headerRow = doc.createElement("tr");
+    const first = doc.createElement("th");
+    first.textContent = "neuron_id";
+    first.style.width = "8ch";
+    headerRow.appendChild(first);
+    for (let rank = 1; rank <= effectiveTopK; rank += 1) {
+      const thText = doc.createElement("th");
+      thText.textContent = `r${rank}_text`;
+      thText.style.width = "20ch";
+      headerRow.appendChild(thText);
+      const thLogit = doc.createElement("th");
+      thLogit.textContent = `r${rank}_logit`;
+      thLogit.style.width = "12ch";
+      headerRow.appendChild(thLogit);
+    }
+    thead.appendChild(headerRow);
+    table.appendChild(thead);
+
+    const tbody = doc.createElement("tbody");
+    if (filteredRowsNow.length === 0) {
+      const tr = doc.createElement("tr");
+      const td = doc.createElement("td");
+      td.colSpan = Math.max(1, 1 + effectiveTopK * 2);
+      td.className = "muted";
+      td.textContent = `No rows pass threshold ${threshold.toFixed(3)} in this batch.`;
+      tr.appendChild(td);
+      tbody.appendChild(tr);
+    } else {
+      filteredRowsNow.forEach((row) => {
+        const tr = doc.createElement("tr");
+        const neuronCell = doc.createElement("td");
+        neuronCell.textContent = String((row && row.neuron_id) ?? "");
+        tr.appendChild(neuronCell);
+        const top = Array.isArray(row && row.top_logits) ? row.top_logits : [];
+        for (let idx = 0; idx < effectiveTopK; idx += 1) {
+          const item = top[idx] || {};
+          const tdText = doc.createElement("td");
+          tdText.textContent = String(item.text ?? "");
+          tdText.title = String(item.text ?? "");
+          tdText.style.maxWidth = "20ch";
+          tdText.style.whiteSpace = "nowrap";
+          tdText.style.overflow = "hidden";
+          tdText.style.textOverflow = "ellipsis";
+          tr.appendChild(tdText);
+          const tdLogit = doc.createElement("td");
+          const lv = item.logit;
+          tdLogit.textContent = typeof lv === "number" ? lv.toFixed(6) : "";
+          tr.appendChild(tdLogit);
+        }
+        tbody.appendChild(tr);
+      });
+    }
+    table.appendChild(tbody);
+    wrap.appendChild(table);
+    return wrap;
+  }
+
+  const tableHost = doc.createElement("div");
+  container.appendChild(tableHost);
+
+  function renderTables() {
+    tableHost.innerHTML = "";
+    meta.textContent = `layer=${Number.isFinite(layer) ? layer : "-"}, activation=${Number.isFinite(activation) ? activation : "-"}, threshold=${threshold.toFixed(3)}, top_k=${Number.isFinite(topK) ? topK : "-"}, hidden_dim=${Number.isFinite(hiddenDim) ? hiddenDim : "-"}, returned=${Number.isFinite(returnedRows) ? returnedRows : "-"}, filtered=${Number.isFinite(filteredRows) ? filteredRows : "-"}`;
+    if (isBatched) {
+      rows.forEach((batch, idx) => {
+        const batchRows = Array.isArray(batch && batch.rows) ? batch.rows : [];
+        const startId = Number(batch && batch.start_neuron_id);
+        const endId = Number(batch && batch.end_neuron_id);
+        const details = doc.createElement("details");
+        details.open = false;
+        details.style.margin = "6px 0";
+        const summary = doc.createElement("summary");
+        summary.style.cursor = "pointer";
+        summary.className = "muted";
+        summary.textContent = `Batch ${idx}: neuron ${Number.isFinite(startId) ? startId : "-"} - ${Number.isFinite(endId) ? endId : "-"}, rows=${batchRows.length}`;
+        details.appendChild(summary);
+        details.appendChild(buildTableForRows(batchRows));
+        tableHost.appendChild(details);
+      });
+      return;
+    }
+    tableHost.appendChild(buildTableForRows(rows));
+  }
+
+  thresholdInput.addEventListener("input", () => {
+    const next = Number(thresholdInput.value);
+    if (!Number.isFinite(next)) return;
+    threshold = next;
+    thresholdStore[thresholdKey] = Number(threshold);
+    renderTables();
+  });
+
+  renderTables();
+}
+
 function renderResultInWindow(studyWindow, result) {
   if (!studyWindow || studyWindow.closed) return;
   const doc = studyWindow.document;
@@ -209,6 +410,11 @@ function waitPopupTask(taskId, summaryNode) {
         const resp = await fetch(`/api/tasks/${encodeURIComponent(tid)}`);
         const payload = await resp.json();
         if (payload && payload.status === "running") {
+          if (payload.partial_result) {
+            try {
+              renderResultInWindowPopup(payload.partial_result);
+            } catch (_renderErr) {}
+          }
           const running = Number(payload.running_for_seconds || 0);
           const remain = Number(payload.estimated_remaining_seconds || 0);
           renderBusySummary(summaryNode, `Task running (${tid}): running=${running.toFixed(1)}s, remaining~${remain.toFixed(1)}s`);
@@ -229,6 +435,11 @@ function waitPopupTask(taskId, summaryNode) {
       }
       if (!payload) return;
       if (payload.status === "running") {
+        if (payload.partial_result) {
+          try {
+            renderResultInWindowPopup(payload.partial_result);
+          } catch (_renderErr) {}
+        }
         const running = Number(payload.running_for_seconds || 0);
         const remain = Number(payload.estimated_remaining_seconds || 0);
         renderBusySummary(summaryNode, `Task running (${tid}): running=${running.toFixed(1)}s, remaining~${remain.toFixed(1)}s`);

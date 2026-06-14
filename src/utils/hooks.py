@@ -775,6 +775,7 @@ def starting_from_middle_layer(
     Args:
         model: Causal LM model (e.g., LlamaForCausalLM).
         start_layer_idx: Decoder layer index to inject hidden state into.
+            -1 means embedding output (run all decoder layers from 0).
         hidden_state: Replacement hidden state. Supported shapes:
             [hidden_dim], [seq_len, hidden_dim], [batch, seq_len, hidden_dim].
         input_ids: Input token ids [batch, seq_len] used for the forward call.
@@ -798,7 +799,7 @@ def starting_from_middle_layer(
         raise ValueError("Model does not expose decoder layers via `model.layers` or `layers`.")
 
     num_layers = len(layers)
-    if not (0 <= int(start_layer_idx) < num_layers):
+    if not (-1 <= int(start_layer_idx) < num_layers):
         raise ValueError(f"start_layer_idx out of range: {start_layer_idx}, num_layers={num_layers}")
 
     current_hidden = _coerce_hidden_tensor(

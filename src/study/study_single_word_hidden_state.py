@@ -1,29 +1,13 @@
 from __future__ import annotations
 
-# Study: Single Word Hidden State - Working Principle
-# 1) UI button ("Single Word Hidden State") triggers backend CLI action:
-#    run-single-word-hidden-state.
-# 2) main.py routes this action to study.run_study(...) in this file.
-# 3) Study calls probe.fetch_single_word_hidden_state(...):
-#    - Probe checks hidden_store first (disk cache).
-#    - On cache miss, probe/runtime fallback runs model forward and writes back to store.
-#    - Probe returns full hidden-state matrix for one token:
-#      [embedding + hidden layers] x [hidden_dim].
-# 4) Study treats that matrix as heatmap payload data and then calls
-#    probe.rank_last_layer_logits_from_heatmap(...) for top-k logits ranking.
-# 5) Study returns one combined payload to UI:
-#    - heatmap data (matrix/rows/cols/metadata)
-#    - logits table (top_logits/logits_source/logits_error)
-#    - ui_tasks (render instructions)
-# 6) UI renders by payload value:
-#    - heatmap renderer uses matrix data
-#    - logits renderer uses top_logits data
-#    - if logits rows are empty, UI still shows source/error status.
-#
-# Design requirements (moved from PROJECT_DESIGN.md):
-# - Study-layer orchestration for single-word hidden-state workflow.
-# - Compose: hidden-state extraction -> heatmap payload -> top logits ranking.
-# - Keep runtime/model lifecycle concerns in runtime_api, not UI coupling here.
+"""单词隐藏状态可视化与 logits 联动分析入口。
+
+功能:
+- 接收单词输入并走缓存优先路径提取完整隐藏状态矩阵。
+- 组织热力图所需的结构化数据（层 x 神经元）。
+- 基于末层向量计算 top-k logits 排名。
+- 统一返回热力图、logits 与 ui_tasks，供前端一次渲染。
+"""
 
 from pathlib import Path
 from typing import Any

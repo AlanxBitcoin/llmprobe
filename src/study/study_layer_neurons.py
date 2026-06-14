@@ -1,10 +1,13 @@
 from __future__ import annotations
 
-# Study: Layer Neurons
-# - Input: JSON list payload describing one layer and multiple neuron overrides.
-# - Validate JSON in backend; if valid, persist to data/cache/layer_neuron_list.json.
-# - Build one intervention vector (all listed neurons applied once), continue from middle layer once.
-# - Return heatmaps + top logits through existing ui_tasks (server-driven UI rendering).
+"""多神经元联合干预 study 入口。
+
+功能:
+- 接收并校验某一层的多神经元干预配置（JSON）。
+- 持久化配置到缓存文件供后续复用。
+- 一次性构建联合干预向量并从中间层继续推理。
+- 返回热力图与 top logits 的前端渲染任务数据。
+"""
 
 from pathlib import Path
 from typing import Any

@@ -1,5 +1,13 @@
 from __future__ import annotations
 
+"""句子末 token 的下一词预测 study 入口。
+
+功能:
+- 对输入句子提取末 token 的各层隐藏状态热力图。
+- 在上下文可用时基于末层向量计算 top-k logits。
+- 输出热力图与 logits 渲染任务，供前端直接展示。
+"""
+
 from pathlib import Path
 from typing import Any
 
@@ -36,4 +44,3 @@ def run_study(
         "logits_error": error,
         "ui_tasks": [{"name": "render_logits", "value_key": "top_logits"}],
     }
-

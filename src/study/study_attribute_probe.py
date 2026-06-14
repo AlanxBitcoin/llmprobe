@@ -1,9 +1,13 @@
 from __future__ import annotations
 
-# Design requirements (moved from PROJECT_DESIGN.md):
-# - Study layer wrapper for attribute probe experiment runs.
-# - Compose config/model/probe modules and export artifacts.
-# - Keep orchestration here, keep model/probe logic in lower layers.
+"""属性探针实验的 study 层编排入口。
+
+功能:
+- 加载配置与模型资源。
+- 读取带属性标签的数据集并构建特征。
+- 训练属性探针并导出实验结果文件。
+- 保持本层只做流程编排，不承载底层算法细节。
+"""
 
 from pathlib import Path
 from typing import Any

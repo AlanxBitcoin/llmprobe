@@ -1,9 +1,13 @@
 from __future__ import annotations
 
-# Study: Token Diff
-# - Input two tokens (single-token words).
-# - Reuse existing single-word hidden-state probe path (store-first).
-# - Render token A heatmap, token B heatmap, and (A-B) diff heatmap.
+"""双词元隐藏状态差分可视化入口。
+
+功能:
+- 接收两个词元输入并分别提取隐藏状态热力图。
+- 复用单词隐藏状态流程（缓存优先）降低重复计算。
+- 计算 A-B 的逐元素差分矩阵。
+- 返回 token A、token B 及差分热力图用于联动展示。
+"""
 
 from pathlib import Path
 from typing import Any
@@ -118,4 +122,3 @@ def run_study(
         "protocol_b": str(hm_b.get("protocol") or ""),
         "ui_tasks": [{"name": "render_heatmap", "value_key": "heatmaps"}],
     }
-

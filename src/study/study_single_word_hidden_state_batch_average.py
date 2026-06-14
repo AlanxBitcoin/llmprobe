@@ -1,10 +1,13 @@
 from __future__ import annotations
 
-# Study: Single Word Hidden State Batch Average
-# - Input is a comma-separated word list.
-# - For each word, reuse the single-word hidden-state probe path (store-first).
-# - Average all successful hidden-state matrices element-wise.
-# - Return averaged heatmap + top-15 logits from the averaged last-layer vector.
+"""多词隐藏状态按样本求平均的 study 入口。
+
+功能:
+- 解析逗号/分号/换行分隔的词列表。
+- 复用单词隐藏状态提取流程（缓存优先）获取每个词的矩阵。
+- 对成功样本做逐元素平均，生成聚合热力图。
+- 基于平均后的末层向量计算 top-k logits 并返回展示数据。
+"""
 
 from pathlib import Path
 from typing import Any

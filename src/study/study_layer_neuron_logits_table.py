@@ -1,13 +1,13 @@
 from __future__ import annotations
 
-# Study: Layer Neuron Single-Activation Logits Table
-# - Choose one decoder layer (default 30).
-# - For each neuron id in hidden_dim:
-#   set only that neuron to value=10 (others=0) as layer output for last token.
-# - Continue forward from that middle layer to the end.
-# - Rank LM-head top-15 logits from final-layer output.
-# - Return a table payload:
-#   rows = neuron id, columns = rank-wise text/logit pairs.
+"""逐个激活隐藏层神经元并生成 logits 排名表。
+
+功能:
+- 在指定 decoder 层（默认 30）对隐藏维神经元逐个做单点激活。
+- 从该中间层继续前向推理至模型末层。
+- 对每次干预结果计算 LM Head top-k logits。
+- 以“神经元 x 排名位”的表格形式返回结果，便于对比分析。
+"""
 
 from pathlib import Path
 from typing import Any

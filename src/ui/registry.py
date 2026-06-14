@@ -93,7 +93,7 @@ UI_ACTIONS: dict[str, UIAction] = {
     "study_layer_ffn_neuron_logits_table": UIAction(
         id="study_layer_ffn_neuron_logits_table",
         label="Layer FFN Neuron Logits Table",
-        description="For one layer, activate one post-SiLU FFN neuron at a time and collect top15 logits.",
+        description="For one layer, activate one post-SiLU FFN neuron at a time and collect top15 logits; reverse mode compares each neuron's W1 vector with this layer input hidden before ranking logits.",
         kind="study",
         command="run-layer-ffn-neuron-logits-table",
         form_schema="layer_ffn_neuron_logits_table_form",
@@ -264,6 +264,10 @@ def build_command_args(action: UIAction, params: dict[str, Any]) -> list[str]:
     if action.command == "run-layer-ffn-neuron-logits-table":
         intervention_layer = params.get("intervention_layer")
         activation_value = params.get("activation_value")
+        include_bos = params.get("include_bos")
+        include_bos_flag = bool(include_bos) if include_bos is not None else True
+        reverse = params.get("reverse")
+        reverse_flag = bool(reverse) if reverse is not None else False
         use_prefix_context = params.get("use_prefix_context")
         use_prefix_context_flag = bool(use_prefix_context) if use_prefix_context is not None else False
         prefix_text = str(params.get("prefix_text") or "The apple is red.")
@@ -274,6 +278,10 @@ def build_command_args(action: UIAction, params: dict[str, Any]) -> list[str]:
             str(30 if intervention_layer is None else intervention_layer),
             "--activation-value",
             str(10.0 if activation_value is None else activation_value),
+            "--include-bos",
+            "true" if include_bos_flag else "false",
+            "--reverse",
+            "true" if reverse_flag else "false",
             "--use-prefix-context",
             "true" if use_prefix_context_flag else "false",
             "--prefix-text",

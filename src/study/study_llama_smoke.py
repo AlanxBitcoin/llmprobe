@@ -1,6 +1,10 @@
-# Design requirements (moved from PROJECT_DESIGN.md):
-# - Utility smoke script to validate basic local Llama loading/inference.
-# - Not part of production study/probe pipeline interfaces.
+"""本地 Llama 模型加载与推理 smoke test 脚本。
+
+功能:
+- 以本地模型路径初始化 tokenizer 与模型。
+- 执行一次最小生成请求，验证基础推理链路可用。
+- 仅用于环境联调，不属于正式 study/probe 流水线接口。
+"""
 
 import torch
 torch.set_grad_enabled(False)

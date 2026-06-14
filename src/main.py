@@ -200,10 +200,21 @@ def build_parser() -> argparse.ArgumentParser:
 
     ffn_neuron_scan = subparsers.add_parser(
         "run-layer-ffn-neuron-logits-table",
-        help="For one layer, activate one post-SiLU FFN neuron at a time and rank top-15 logits.",
+        help="For one layer, activate one post-SiLU FFN neuron at a time and rank top-15 logits (or rank directly from W1 in reverse mode).",
     )
-    ffn_neuron_scan.add_argument("--intervention-layer", type=int, default=30, help="Decoder layer number, 1-based (default: 30)")
+    ffn_neuron_scan.add_argument(
+        "--intervention-layer",
+        type=int,
+        default=30,
+        help="Layer id: forward mode uses 1-based; reverse mode uses 0-based layer index for W1(gate_proj) rows.",
+    )
     ffn_neuron_scan.add_argument("--activation-value", type=float, default=10.0, help="FFN neuron activation value (default: 10.0)")
+    ffn_neuron_scan.add_argument(
+        "--include-bos",
+        type=_parse_bool_flag,
+        default=True,
+        help="Whether to use BOS protocol (bos1_assistant0) when reading sentence/store context (true/false).",
+    )
     ffn_neuron_scan.add_argument(
         "--use-prefix-context",
         type=_parse_bool_flag,
@@ -217,6 +228,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Prefix sentence to run before intervention when --use-prefix-context=true.",
     )
     ffn_neuron_scan.add_argument("--return-batch-size", type=int, default=1000, help="Rows per batch in returned payload (default: 1000)")
+    ffn_neuron_scan.add_argument(
+        "--reverse",
+        type=_parse_bool_flag,
+        default=False,
+        help="If true, compute logits from element-wise combination of each FFN neuron's W1(gate_proj) row and this layer input hidden state.",
+    )
 
     layer_neurons = subparsers.add_parser(
         "run-layer-neurons",
@@ -470,9 +487,11 @@ def _execute_parsed_args(args: argparse.Namespace, config: dict[str, Any]) -> di
         heatmap = run_layer_ffn_neuron_logits_table_study(
             intervention_layer=int(args.intervention_layer),
             activation_value=float(args.activation_value),
+            include_bos=bool(args.include_bos),
             use_prefix_context=bool(args.use_prefix_context),
             prefix_text=str(args.prefix_text or ""),
             return_batch_size=int(args.return_batch_size),
+            reverse=bool(args.reverse),
             config=config,
             config_path=args.config,
         )

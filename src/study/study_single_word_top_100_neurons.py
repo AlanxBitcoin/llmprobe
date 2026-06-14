@@ -1,12 +1,13 @@
 from __future__ import annotations
 
-# Study: Single Word Top 100 Neurons (Penultimate Intervention)
-# 1) Fetch full hidden-state heatmap for one word input (store-first).
-# 2) Compute baseline top-15 logits from the original last-layer vector.
-# 3) Take penultimate-layer vector, keep abs top-100 neurons, zero others.
-# 4) Inject that sparse vector into penultimate layer (last token) via hook.
-# 5) Re-run model path so final two layers are naturally recomputed.
-# 6) Compute another top-15 logits table from intervened output.
+"""单词 top 神经元稀疏干预实验入口。
+
+功能:
+- 获取单词隐藏状态并计算基线 top-k logits。
+- 在倒数第二层保留绝对值最大的 top-N 神经元，其余置零。
+- 通过 hook 注入稀疏向量并继续推理，得到干预后输出。
+- 对比干预前后 logits，支持神经元重要性分析。
+"""
 
 from pathlib import Path
 from typing import Any

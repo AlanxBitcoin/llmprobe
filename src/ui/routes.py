@@ -211,6 +211,31 @@ def _ffn_history_dir(project_root: str | Path) -> Path:
     return (root / "data" / "outputs" / "layer_ffn_neuron_logits_table" / "history").resolve()
 
 
+def _ffn_live_progress_file(project_root: str | Path) -> Path:
+    root = Path(project_root).resolve()
+    return (root / "data" / "outputs" / "layer_ffn_neuron_logits_table" / "progress" / "live_progress.json").resolve()
+
+
+def _load_ffn_live_progress(project_root: str | Path) -> dict[str, Any] | None:
+    path = _ffn_live_progress_file(project_root)
+    if not path.exists() or not path.is_file():
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else None
+    except Exception:
+        return None
+
+
+def _clear_ffn_live_progress(project_root: str | Path) -> None:
+    path = _ffn_live_progress_file(project_root)
+    try:
+        if path.exists():
+            path.unlink()
+    except Exception:
+        pass
+
+
 def _ffn_history_files(project_root: str | Path) -> list[Path]:
     history_dir = _ffn_history_dir(project_root)
     if not history_dir.exists():
@@ -239,6 +264,7 @@ def _parse_ffn_history_name(name: str) -> dict[str, Any]:
 
     Supported names:
       - ffn_layer31_act10p0_YYYYMMDD_HHMMSS.csv
+      - ffn_layer31_act10p0_rev1_YYYYMMDD_HHMMSS.csv
       - ffn_layer31_act10p0_thr15p0_YYYYMMDD_HHMMSS.csv (legacy)
     """
     stem = Path(str(name)).stem
@@ -259,6 +285,7 @@ def _parse_ffn_history_name(name: str) -> dict[str, Any]:
             out["threshold"] = float(m_thr.group(1).replace("p", "."))
         except ValueError:
             pass
+    out["reverse"] = bool(re.search(r"_rev1(?:_|$)", stem))
     return out
 
 
@@ -352,6 +379,8 @@ def _load_ffn_neuron_history_result_from_csv(project_root: str | Path, csv_path:
         "ui_tasks": [{"name": "render_neuron_logits_table", "value_key": "neuron_logits_batches"}],
     }
     heatmap.update(_parse_ffn_history_name(csv_path.name))
+    if bool(heatmap.get("reverse")):
+        heatmap["neuron_kind"] = "ffn_w1_reverse"
     return {
         "status": "ok",
         "return_code": 0,
@@ -815,6 +844,8 @@ def execute_ui_action(
             words_csv=str(params.get("words_csv") or ""),
         )
     command_args = build_command_args(action, params)
+    if action.command == "run-layer-ffn-neuron-logits-table":
+        _clear_ffn_live_progress(root)
     cmd = ["inprocess", "src.main", "--config", str(config_path), *command_args]
     started_at = time.time()
     eta_seconds = _estimate_duration_seconds(action.id)
@@ -952,6 +983,8 @@ def start_ui_action_task(
                 "finished_at": now,
             }
     command_args = build_command_args(action, params)
+    if action.command == "run-layer-ffn-neuron-logits-table":
+        _clear_ffn_live_progress(root)
     cmd = ["inprocess", "src.main", "--config", str(config_path), *command_args]
     started_at = time.time()
     eta_seconds = _estimate_duration_seconds(action.id)
@@ -978,6 +1011,7 @@ def start_ui_action_task(
             "status": "running",
             "task_id": task_id,
             "action_id": action.id,
+            "project_root": str(root),
             "started_at": started_at,
             "updated_at": started_at,
             "eta_seconds": eta_seconds,
@@ -1065,6 +1099,8 @@ def start_ui_action_task(
                     _TASKS[task_id]["result"] = result
                     _TASKS[task_id]["error"] = str(exc)
         finally:
+            if action.command == "run-layer-ffn-neuron-logits-table":
+                _clear_ffn_live_progress(root)
             elapsed = max(0.0, time.time() - started_at)
             _remember_duration_seconds(action.id, elapsed)
             _RUN_STATE["action_id"] = None
@@ -1098,7 +1134,7 @@ def get_ui_action_task(task_id: str) -> dict[str, Any]:
     eta_seconds = float(task.get("eta_seconds") or 0.0)
     running_for = max(0.0, time.time() - started_at)
     remaining = max(0.0, eta_seconds - running_for)
-    return {
+    out = {
         "status": "running",
         "task_id": str(task_id),
         "action_id": task.get("action_id"),
@@ -1107,6 +1143,12 @@ def get_ui_action_task(task_id: str) -> dict[str, Any]:
         "estimated_remaining_seconds": round(remaining, 1),
         "updated_at": float(task.get("updated_at") or started_at),
     }
+    if str(task.get("action_id") or "") == "study_layer_ffn_neuron_logits_table":
+        root = Path(str(task.get("project_root") or Path.cwd())).resolve()
+        partial = _load_ffn_live_progress(root)
+        if isinstance(partial, dict):
+            out["partial_result"] = partial
+    return out
 
 
 def parse_json_body(raw_body: bytes) -> dict[str, Any]:

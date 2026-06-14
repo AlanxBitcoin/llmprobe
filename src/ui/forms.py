@@ -79,8 +79,10 @@ FORM_SCHEMAS: dict[str, list[dict[str, Any]]] = {
         },
     ],
     "layer_ffn_neuron_logits_table_form": [
-        {"name": "intervention_layer", "label": "Layer", "type": "number", "default": 30, "min": 1, "step": 1},
+        {"name": "intervention_layer", "label": "Layer", "type": "number", "default": 30, "min": 0, "step": 1},
         {"name": "activation_value", "label": "Activation Value", "type": "number", "default": 10.0},
+        {"name": "include_bos", "label": "Include BOS", "type": "checkbox", "default": True},
+        {"name": "reverse", "label": "Reverse (W1 x layer-input hidden)", "type": "checkbox", "default": False},
         {"name": "use_prefix_context", "label": "Use Prefix Context", "type": "checkbox", "default": False},
         {"name": "prefix_text", "label": "Prefix Sentence", "type": "text", "default": "The apple is red.", "required": False},
         {"name": "return_batch_size", "label": "Return Batch Size", "type": "number", "default": 1000, "min": 1},

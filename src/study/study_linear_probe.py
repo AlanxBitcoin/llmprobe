@@ -1,9 +1,13 @@
 from __future__ import annotations
 
-# Design requirements (moved from PROJECT_DESIGN.md):
-# - Study layer wrapper for linear probe experiment runs.
-# - Compose config/model/probe modules and export artifacts.
-# - Avoid embedding probe algorithm details here.
+"""线性探针实验的 study 层编排入口。
+
+功能:
+- 加载配置与模型资源。
+- 读取带标签词表并构建探针训练数据集。
+- 训练线性探针并导出评估与结果文件。
+- 保持 study 层聚焦流程编排，算法细节下沉到 probe 模块。
+"""
 
 from pathlib import Path
 from typing import Any

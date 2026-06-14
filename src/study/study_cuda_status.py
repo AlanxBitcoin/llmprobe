@@ -1,6 +1,10 @@
-# Design requirements (moved from PROJECT_DESIGN.md):
-# - Utility smoke script for local CUDA/runtime diagnostics only.
-# - Not part of production study/probe pipeline interfaces.
+"""本地 CUDA 与 PyTorch 运行环境快速自检脚本。
+
+功能:
+- 输出 Python、PyTorch 与 CUDA 可用性信息。
+- 在 CUDA 可用时显示显卡数量、名称与显存。
+- 仅用于本地诊断，不属于正式 study/probe 流水线接口。
+"""
 
 import sys
 import torch
