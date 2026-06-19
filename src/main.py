@@ -55,6 +55,7 @@ from src.study import (
     run_layer_ffn_neuron_logits_table_study,
     run_layer_neuron_logits_table_study,
     run_layer_neurons_study,
+    run_one_on_one_attention_study,
     run_qk_params_study,
     run_linear_probe_study,
     run_sentence_next_word_study,
@@ -170,6 +171,19 @@ def build_parser() -> argparse.ArgumentParser:
     )
     token_diff.add_argument("token_a", help="Token A text")
     token_diff.add_argument("token_b", help="Token B text")
+
+    one_on_one_attn = subparsers.add_parser(
+        "run-one-on-one-attention",
+        help="Input two single-token words and render layer x head attention heatmaps using hidden_store protocol/chat-template context.",
+    )
+    one_on_one_attn.add_argument("token_a", help="Previous token text")
+    one_on_one_attn.add_argument("token_b", help="Current token text")
+    one_on_one_attn.add_argument(
+        "--include-assistant",
+        type=_parse_bool_flag,
+        default=False,
+        help="Whether to include assistant chat marker context and render assistant-symbol attention (true/false).",
+    )
 
     subparsers.add_parser(
         "run-qk-params",
@@ -481,6 +495,16 @@ def _execute_parsed_args(args: argparse.Namespace, config: dict[str, Any]) -> di
         heatmap = run_token_diff_study(
             token_a=str(args.token_a or ""),
             token_b=str(args.token_b or ""),
+            config=config,
+            config_path=args.config,
+        )
+        return {"hidden_state_heatmap": heatmap}
+
+    if args.command == "run-one-on-one-attention":
+        heatmap = run_one_on_one_attention_study(
+            token_a=str(args.token_a or ""),
+            token_b=str(args.token_b or ""),
+            include_assistant=bool(args.include_assistant),
             config=config,
             config_path=args.config,
         )

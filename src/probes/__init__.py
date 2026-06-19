@@ -15,6 +15,7 @@ from .probe_hidden_state import (
     fetch_single_word_hidden_state,
     rank_last_layer_logits_from_heatmap,
 )
+from .probe_attention import fetch_head_attention_metrics_for_input_ids
 
 __all__ = [
     "build_probe_dataset",
@@ -22,6 +23,7 @@ __all__ = [
     "fetch_single_word_hidden_state",
     "fetch_sentence_last_token_hidden_state",
     "load_labeled_words",
+    "fetch_head_attention_metrics_for_input_ids",
     "rank_last_layer_logits_from_heatmap",
     "rank_logits_after_penultimate_topk_intervention",
     "run_layer_neuron_batch_to_logits_probe",

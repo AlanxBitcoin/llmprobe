@@ -41,6 +41,11 @@ FORM_SCHEMAS: dict[str, list[dict[str, Any]]] = {
         {"name": "token_a", "label": "Token A", "type": "text", "default": "apple", "required": True},
         {"name": "token_b", "label": "Token B", "type": "text", "default": "banana", "required": True},
     ],
+    "one_on_one_attention_form": [
+        {"name": "token_a", "label": "Word A (previous)", "type": "text", "default": "apple", "required": True},
+        {"name": "token_b", "label": "Word B (current)", "type": "text", "default": "banana", "required": True},
+        {"name": "include_assistant", "label": "Include Assistant", "type": "checkbox", "default": False},
+    ],
     "qk_params_form": [
         {"name": "view_by_layer", "label": "按层看 (Layer x Dim)", "type": "checkbox", "default": True},
         {"name": "view_by_head", "label": "按头看 (Layer x Head)", "type": "checkbox", "default": False},

@@ -9,6 +9,7 @@ from .study_linear_probe import run_study as run_linear_probe_study
 from .study_layer_ffn_neuron_logits_table import run_study as run_layer_ffn_neuron_logits_table_study
 from .study_layer_neuron_logits_table import run_study as run_layer_neuron_logits_table_study
 from .study_layer_neurons import run_study as run_layer_neurons_study
+from .study_one_on_one_attention import run_study as run_one_on_one_attention_study
 from .study_qk_params import run_study as run_qk_params_study
 from .study_sentence_next_word import run_study as run_sentence_next_word_study
 from .study_single_word_hidden_state import run_study as run_single_word_hidden_state_study
@@ -23,6 +24,7 @@ __all__ = [
     "run_layer_ffn_neuron_logits_table_study",
     "run_layer_neuron_logits_table_study",
     "run_layer_neurons_study",
+    "run_one_on_one_attention_study",
     "run_qk_params_study",
     "run_sentence_next_word_study",
     "run_single_word_hidden_state_study",

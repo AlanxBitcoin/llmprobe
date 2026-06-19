@@ -66,6 +66,14 @@ UI_ACTIONS: dict[str, UIAction] = {
         command="run-token-diff",
         form_schema="token_diff_form",
     ),
+    "study_one_on_one_attention": UIAction(
+        id="study_one_on_one_attention",
+        label="1 on 1 Attention",
+        description="Input two single-token words, then render layer x head attention heatmaps for token_b->token_a and token_b->self (with BOS).",
+        kind="study",
+        command="run-one-on-one-attention",
+        form_schema="one_on_one_attention_form",
+    ),
     "study_qk_params": UIAction(
         id="study_qk_params",
         label="QK Params",
@@ -212,6 +220,16 @@ def build_command_args(action: UIAction, params: dict[str, Any]) -> list[str]:
             action.command,
             str(params.get("token_a") or "apple"),
             str(params.get("token_b") or "banana"),
+        ]
+    if action.command == "run-one-on-one-attention":
+        include_assistant = params.get("include_assistant")
+        include_assistant_flag = bool(include_assistant) if include_assistant is not None else False
+        return [
+            action.command,
+            str(params.get("token_a") or "apple"),
+            str(params.get("token_b") or "banana"),
+            "--include-assistant",
+            "true" if include_assistant_flag else "false",
         ]
     if action.command == "run-qk-params":
         view_by_layer = params.get("view_by_layer")

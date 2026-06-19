@@ -851,6 +851,16 @@ function updateLayerNeuronsListPicker() {
 
 async function runSelectedAction() {
   if (!selectedAction) return;
+  if (selectedAction.id === "study_one_on_one_attention" || selectedAction.id === "study_token_diff") {
+    const tokenAInput = paramsForm.elements.namedItem("token_a");
+    const tokenBInput = paramsForm.elements.namedItem("token_b");
+    const tokenA = String((tokenAInput && tokenAInput.value) || "").trim();
+    const tokenB = String((tokenBInput && tokenBInput.value) || "").trim();
+    if (!tokenA || !tokenB) {
+      showJsonValidationError("Please input both words.");
+      return;
+    }
+  }
   if (selectedAction.id === "study_attribute_group_neurons") {
     const err = validateAttributeGroupEntryFromEditor();
     if (err) {
