@@ -313,7 +313,7 @@ def run_study(
         "prefix_token_count": int(len(prefix_token_ids)),
         "prefix_last_token_attention_by_layer": prefix_attention_by_layer,
         "attention_reused_for_intervention": bool(attention_reused_for_intervention),
-        "threshold": 15.0,
+        "threshold": 0.0,
         "top_k": int(top_k),
         "hidden_dim": int(hidden_dim),
         "returned_rows": int(len(rows)),

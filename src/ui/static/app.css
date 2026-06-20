@@ -335,11 +335,12 @@ th {
   box-shadow: var(--shadow);
   min-height: 560px;
   display: grid;
-  grid-template-rows: auto 1fr auto auto;
+  grid-template-rows: auto auto auto auto;
+  align-content: start;
 }
 
 .chat-transcript {
-  height: 360px;
+  height: 300px;
   overflow: auto;
   border: 1px solid var(--line);
   border-radius: 6px;
@@ -397,6 +398,10 @@ th {
   border: 1px solid var(--line);
   border-radius: 6px;
   background: #fff;
+}
+
+.chat-setting.chat-setting-wide input {
+  width: 220px;
 }
 
 .chat-composer {
@@ -469,7 +474,12 @@ th {
 
   .actions-pane,
   .form-pane,
-  .result-pane {
+  .result-pane,
+  .chat-section {
     min-height: auto;
+  }
+
+  .chat-transcript {
+    height: 240px;
   }
 }

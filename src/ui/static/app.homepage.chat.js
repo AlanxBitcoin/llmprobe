@@ -145,14 +145,42 @@ async function sendChatMessage() {
 
 function updateChatNeuronControls() {
   const enabled = Boolean(chatLayerNeuronEnabled && chatLayerNeuronEnabled.checked);
-  if (chatLayerNeuronLayer) chatLayerNeuronLayer.disabled = !enabled;
-  if (chatLayerNeuronId) chatLayerNeuronId.disabled = !enabled;
-  if (chatLayerNeuronValue) chatLayerNeuronValue.disabled = !enabled;
-  if (chatLayerNeuronToken) chatLayerNeuronToken.disabled = !enabled;
+  if (chatLayerNeuronLayer) {
+    chatLayerNeuronLayer.disabled = !enabled;
+    const parent = chatLayerNeuronLayer.closest(".chat-setting");
+    if (parent) parent.style.display = enabled ? "" : "none";
+  }
+  if (chatLayerNeuronId) {
+    chatLayerNeuronId.disabled = !enabled;
+    const parent = chatLayerNeuronId.closest(".chat-setting");
+    if (parent) parent.style.display = enabled ? "" : "none";
+  }
+  if (chatLayerNeuronValue) {
+    chatLayerNeuronValue.disabled = !enabled;
+    const parent = chatLayerNeuronValue.closest(".chat-setting");
+    if (parent) parent.style.display = enabled ? "" : "none";
+  }
+  if (chatLayerNeuronToken) {
+    chatLayerNeuronToken.disabled = !enabled;
+    const parent = chatLayerNeuronToken.closest(".chat-setting");
+    if (parent) parent.style.display = enabled ? "" : "none";
+  }
   const ffnEnabled = Boolean(chatFfnNeuronEnabled && chatFfnNeuronEnabled.checked);
-  if (chatFfnNeuronLayer) chatFfnNeuronLayer.disabled = !ffnEnabled;
-  if (chatFfnNeuronId) chatFfnNeuronId.disabled = !ffnEnabled;
-  if (chatFfnNeuronValue) chatFfnNeuronValue.disabled = !ffnEnabled;
+  if (chatFfnNeuronLayer) {
+    chatFfnNeuronLayer.disabled = !ffnEnabled;
+    const parent = chatFfnNeuronLayer.closest(".chat-setting");
+    if (parent) parent.style.display = ffnEnabled ? "" : "none";
+  }
+  if (chatFfnNeuronId) {
+    chatFfnNeuronId.disabled = !ffnEnabled;
+    const parent = chatFfnNeuronId.closest(".chat-setting");
+    if (parent) parent.style.display = ffnEnabled ? "" : "none";
+  }
+  if (chatFfnNeuronValue) {
+    chatFfnNeuronValue.disabled = !ffnEnabled;
+    const parent = chatFfnNeuronValue.closest(".chat-setting");
+    if (parent) parent.style.display = ffnEnabled ? "" : "none";
+  }
 }
 
 function clearChat() {
@@ -175,6 +203,5 @@ if (chatLayerNeuronEnabled) {
 if (chatFfnNeuronEnabled) {
   chatFfnNeuronEnabled.addEventListener("change", updateChatNeuronControls);
 }
-
 initChat();
 updateChatNeuronControls();

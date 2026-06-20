@@ -52,9 +52,11 @@ from src.runtime_api import start_llama_api
 from src.study import (
     run_attribute_group_neurons_study,
     run_attribute_probe_study,
+    run_chat_attention_word_replacement_study,
     run_layer_ffn_neuron_logits_table_study,
     run_layer_neuron_logits_table_study,
     run_layer_neurons_study,
+    run_layer_shortcut_study,
     run_one_on_one_attention_study,
     run_qk_params_study,
     run_linear_probe_study,
@@ -185,6 +187,65 @@ def build_parser() -> argparse.ArgumentParser:
         help="Whether to include assistant chat marker context and render assistant-symbol attention (true/false).",
     )
 
+    chat_awr = subparsers.add_parser(
+        "run-chat-attention-word-replacement",
+        help="Chat study: replace selected user-word attention cache from a start layer at assistant boundary, then generate.",
+    )
+    chat_awr.add_argument(
+        "--prompt-text",
+        type=str,
+        default="Alice gave Bob a book.Who has the book?Please directly give the name",
+        help="User prompt text for this one-turn chat study.",
+    )
+    chat_awr.add_argument(
+        "--target-word",
+        type=str,
+        default="Bob",
+        help="Word to replace in the user prompt.",
+    )
+    chat_awr.add_argument(
+        "--replacement-word",
+        type=str,
+        default="BIll",
+        help="Replacement word used to build substitute cache.",
+    )
+    chat_awr.add_argument(
+        "--replace-layers",
+        type=str,
+        default="0-",
+        help="Layers to replace (0-based). Examples: 0- , 0-3 , 0,3",
+    )
+    chat_awr.add_argument(
+        "--replace-k",
+        type=_parse_bool_flag,
+        default=False,
+        help="Whether to replace K together with V (true/false). false means V-only replacement.",
+    )
+    chat_awr.add_argument(
+        "--max-new-tokens",
+        type=int,
+        default=64,
+        help="Max generated tokens.",
+    )
+    chat_awr.add_argument(
+        "--temperature",
+        type=float,
+        default=0.7,
+        help="Sampling temperature (>0 enables sampling).",
+    )
+    chat_awr.add_argument(
+        "--top-p",
+        type=float,
+        default=0.9,
+        help="Nucleus sampling top_p.",
+    )
+    chat_awr.add_argument(
+        "--include-assistant-marker",
+        type=_parse_bool_flag,
+        default=True,
+        help="Whether to include assistant generation marker (must be true for this study).",
+    )
+
     subparsers.add_parser(
         "run-qk-params",
         help="Render model Q/K projection-parameter heatmaps (Q-head vs K-head cosine per layer).",
@@ -307,6 +368,24 @@ def build_parser() -> argparse.ArgumentParser:
         type=str,
         default="",
         help="JSON payload (compact preferred): {list_name,nLayer,neurons:[[nNeuron,value],...]}",
+    )
+
+    layer_shortcut = subparsers.add_parser(
+        "run-layer-shortcut",
+        help="Single-token layer shortcut: layer 1..30 hidden -> configured target layer input, then rank top-15 logits.",
+    )
+    layer_shortcut.add_argument("word", help="Single-token word")
+    layer_shortcut.add_argument(
+        "--include-bos",
+        type=_parse_bool_flag,
+        default=True,
+        help="Whether to prepend BOS/chat-prefix symbols (true/false). false means only this word token is used.",
+    )
+    layer_shortcut.add_argument(
+        "--jump-to-layer",
+        type=int,
+        default=32,
+        help="1-based decoder layer number to inject hidden state into (default: 32).",
     )
 
     attr_group_neurons = subparsers.add_parser(
@@ -510,6 +589,78 @@ def _execute_parsed_args(args: argparse.Namespace, config: dict[str, Any]) -> di
         )
         return {"hidden_state_heatmap": heatmap}
 
+    if args.command == "run-chat-attention-word-replacement":
+        from src.runtime_api import RuntimeRequest, get_runtime_api
+
+        try:
+            api = get_runtime_api()
+        except RuntimeError:
+            api = start_llama_api(config)
+        bundle = api.execute_model_call(RuntimeRequest(config=config, force_reload=False)).bundle
+        tokenizer = bundle.tokenizer
+        model = bundle.model
+
+        safe_max_new_tokens = int(max(1, min(int(args.max_new_tokens), 1024)))
+        safe_temperature = float(args.temperature)
+        safe_top_p = float(args.top_p)
+        do_sample = safe_temperature > 0.0
+        if do_sample:
+            safe_temperature = max(0.05, min(safe_temperature, 5.0))
+            safe_top_p = max(0.05, min(safe_top_p, 1.0))
+
+        result = run_chat_attention_word_replacement_study(
+            model=model,
+            tokenizer=tokenizer,
+            messages=[{"role": "user", "content": str(args.prompt_text or "")}],
+            target_word=str(args.target_word or ""),
+            replacement_word=str(args.replacement_word or ""),
+            replace_layers=str(args.replace_layers or ""),
+            replace_k=bool(args.replace_k),
+            max_new_tokens=safe_max_new_tokens,
+            do_sample=bool(do_sample),
+            temperature=float(safe_temperature),
+            top_p=float(safe_top_p),
+            eos_token_id=int(tokenizer.eos_token_id) if tokenizer.eos_token_id is not None else None,
+            include_assistant_marker=bool(args.include_assistant_marker),
+        )
+        if str(result.get("status") or "") != "ok":
+            reason = str(result.get("error") or "chat_attention_word_replacement_failed")
+            print(f"[chat_awr] error: {reason}")
+            return {
+                "hidden_state_heatmap": {
+                    "ok": False,
+                    "study": "chat_attention_word_replacement",
+                    "reason": reason,
+                    "summary_text": reason,
+                    "ui_tasks": [],
+                }
+            }
+        assistant_message = str(result.get("assistant_message") or "").strip()
+        meta = result.get("attention_word_replacement") or {}
+        top_logits = result.get("top_logits") if isinstance(result.get("top_logits"), list) else []
+        summary_text = (
+            f"Prompt: {str(args.prompt_text or '')}\n"
+            f"Target -> Replacement: {str(args.target_word or '')} -> {str(args.replacement_word or '')}\n"
+            f"Replace layers: {str(args.replace_layers or '')}\n"
+            f"Replace K: {bool(args.replace_k)} ({'KV' if bool(args.replace_k) else 'V-only'})\n"
+            f"Generated tokens: {int(result.get('generated_token_count') or 0)}\n"
+            f"Assistant: {assistant_message}"
+        )
+        print(summary_text)
+        return {
+            "hidden_state_heatmap": {
+                "ok": True,
+                "study": "chat_attention_word_replacement",
+                "prompt_text": str(args.prompt_text or ""),
+                "assistant_message": assistant_message,
+                "generated_token_count": int(result.get("generated_token_count") or 0),
+                "attention_word_replacement": meta,
+                "top_logits": top_logits,
+                "summary_text": summary_text,
+                "ui_tasks": [{"name": "render_logits", "value_key": "top_logits"}],
+            }
+        }
+
     if args.command == "run-qk-params":
         heatmap = run_qk_params_study(
             view_by_layer=bool(args.view_by_layer),
@@ -563,6 +714,16 @@ def _execute_parsed_args(args: argparse.Namespace, config: dict[str, Any]) -> di
             use_prefix_context=bool(args.use_prefix_context),
             prefix_text=str(args.prefix_text or ""),
             use_random1000_baseline_no_prefix=bool(args.use_random1000_baseline_no_prefix),
+            config=config,
+            config_path=args.config,
+        )
+        return {"hidden_state_heatmap": heatmap}
+
+    if args.command == "run-layer-shortcut":
+        heatmap = run_layer_shortcut_study(
+            word=str(args.word or ""),
+            jump_to_layer=int(args.jump_to_layer),
+            include_bos=bool(args.include_bos),
             config=config,
             config_path=args.config,
         )

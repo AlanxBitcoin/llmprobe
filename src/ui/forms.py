@@ -46,6 +46,24 @@ FORM_SCHEMAS: dict[str, list[dict[str, Any]]] = {
         {"name": "token_b", "label": "Word B (current)", "type": "text", "default": "banana", "required": True},
         {"name": "include_assistant", "label": "Include Assistant", "type": "checkbox", "default": False},
     ],
+    "chat_attention_word_replacement_form": [
+        {
+            "name": "prompt_text",
+            "label": "Prompt Text",
+            "type": "textarea",
+            "default": "Alice gave Bob a book.Who has the book?Please directly give the name",
+            "required": True,
+            "rows": 6,
+        },
+        {"name": "target_word", "label": "Target Word", "type": "text", "default": "Bob", "required": True},
+        {"name": "replacement_word", "label": "Replacement Word", "type": "text", "default": "BIll", "required": True},
+        {"name": "replace_layers", "label": "Replace Layers (0-based)", "type": "text", "default": "0-", "required": True},
+        {"name": "replace_k", "label": "Replace K (KV mode)", "type": "checkbox", "default": False},
+        {"name": "max_new_tokens", "label": "Max New Tokens", "type": "number", "default": 64, "min": 1, "step": 1},
+        {"name": "temperature", "label": "Temperature", "type": "number", "default": 0.7, "min": 0, "step": 0.01},
+        {"name": "top_p", "label": "Top P", "type": "number", "default": 0.9, "min": 0.05, "max": 1.0, "step": 0.01},
+        {"name": "include_assistant_marker", "label": "Include Assistant Marker", "type": "checkbox", "default": True},
+    ],
     "qk_params_form": [
         {"name": "view_by_layer", "label": "按层看 (Layer x Dim)", "type": "checkbox", "default": True},
         {"name": "view_by_head", "label": "按头看 (Layer x Head)", "type": "checkbox", "default": False},
@@ -96,6 +114,11 @@ FORM_SCHEMAS: dict[str, list[dict[str, Any]]] = {
         {"name": "use_prefix_context", "label": "Use Prefix Context", "type": "checkbox", "default": False},
         {"name": "prefix_text", "label": "Prefix Sentence", "type": "text", "default": "The apple is red.", "required": False},
         {"name": "return_batch_size", "label": "Return Batch Size", "type": "number", "default": 1000, "min": 1},
+    ],
+    "layer_shortcut_form": [
+        {"name": "word", "label": "Word (Single Token)", "type": "text", "default": "apple", "required": True},
+        {"name": "include_bos", "label": "Include BOS", "type": "checkbox", "default": True},
+        {"name": "jump_to_layer", "label": "Jump To Layer (1-based)", "type": "number", "default": 32, "min": 1, "step": 1},
     ],
     "color_words_form": [
         {"name": "word_file", "label": "Word file", "type": "text", "default": "data/color_words.txt"},

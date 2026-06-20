@@ -5,10 +5,12 @@ from __future__ import annotations
 
 from .study_attribute_probe import run_study as run_attribute_probe_study
 from .study_attribute_group_neurons import run_study as run_attribute_group_neurons_study
+from .study_chat_attention_word_replacement import run_study as run_chat_attention_word_replacement_study
 from .study_linear_probe import run_study as run_linear_probe_study
 from .study_layer_ffn_neuron_logits_table import run_study as run_layer_ffn_neuron_logits_table_study
 from .study_layer_neuron_logits_table import run_study as run_layer_neuron_logits_table_study
 from .study_layer_neurons import run_study as run_layer_neurons_study
+from .study_layer_shortcut import run_study as run_layer_shortcut_study
 from .study_one_on_one_attention import run_study as run_one_on_one_attention_study
 from .study_qk_params import run_study as run_qk_params_study
 from .study_sentence_next_word import run_study as run_sentence_next_word_study
@@ -21,9 +23,11 @@ __all__ = [
     "run_linear_probe_study",
     "run_attribute_probe_study",
     "run_attribute_group_neurons_study",
+    "run_chat_attention_word_replacement_study",
     "run_layer_ffn_neuron_logits_table_study",
     "run_layer_neuron_logits_table_study",
     "run_layer_neurons_study",
+    "run_layer_shortcut_study",
     "run_one_on_one_attention_study",
     "run_qk_params_study",
     "run_sentence_next_word_study",

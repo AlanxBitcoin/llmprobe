@@ -41,7 +41,8 @@ function neuronThresholdStateKey(payload) {
 
 function renderNeuronLogitsTableIntoDoc(doc, container, rows, payload) {
   const title = doc.createElement("h3");
-  title.textContent = "Neuron -> Top 15 Logits Table";
+  const tableTitle = String((payload && payload.table_title) || "").trim();
+  title.textContent = tableTitle || "Neuron -> Top 15 Logits Table";
   container.appendChild(title);
 
   const layer = Number(payload && payload.intervention_layer);
@@ -57,7 +58,7 @@ function renderNeuronLogitsTableIntoDoc(doc, container, rows, payload) {
   let threshold = Number.isFinite(rememberedThreshold)
     ? rememberedThreshold
     : Number(payload && payload.threshold);
-  if (!Number.isFinite(threshold)) threshold = 15.0;
+  if (!Number.isFinite(threshold)) threshold = 0.0;
   const returnedRows = Number(payload && payload.returned_rows);
   const filteredRows = Number(payload && payload.filtered_out_rows);
   const meta = doc.createElement("div");
@@ -92,6 +93,8 @@ function renderNeuronLogitsTableIntoDoc(doc, container, rows, payload) {
   container.appendChild(controls);
 
   const isBatched = Array.isArray(rows) && rows.length > 0 && rows[0] && typeof rows[0] === "object" && Array.isArray(rows[0].rows);
+  const rowLabelKey = String((payload && payload.row_label_key) || "neuron_id");
+  const rowLabelTitle = String((payload && payload.row_label_title) || rowLabelKey);
   if (!Array.isArray(rows) || rows.length === 0) {
     const empty = doc.createElement("div");
     empty.className = "muted";
@@ -122,7 +125,7 @@ function renderNeuronLogitsTableIntoDoc(doc, container, rows, payload) {
     const thead = doc.createElement("thead");
     const headerRow = doc.createElement("tr");
     const first = doc.createElement("th");
-    first.textContent = "neuron_id";
+    first.textContent = rowLabelTitle;
     first.style.width = "8ch";
     headerRow.appendChild(first);
     for (let rank = 1; rank <= effectiveTopK; rank += 1) {
@@ -151,7 +154,10 @@ function renderNeuronLogitsTableIntoDoc(doc, container, rows, payload) {
       filteredRowsNow.forEach((row) => {
         const tr = doc.createElement("tr");
         const neuronCell = doc.createElement("td");
-        neuronCell.textContent = String((row && row.neuron_id) ?? "");
+        const rowLabelValue = row && Object.prototype.hasOwnProperty.call(row, rowLabelKey)
+          ? row[rowLabelKey]
+          : (row && row.neuron_id);
+        neuronCell.textContent = String(rowLabelValue ?? "");
         tr.appendChild(neuronCell);
         const top = Array.isArray(row && row.top_logits) ? row.top_logits : [];
         for (let idx = 0; idx < effectiveTopK; idx += 1) {

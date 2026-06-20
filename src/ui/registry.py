@@ -74,6 +74,14 @@ UI_ACTIONS: dict[str, UIAction] = {
         command="run-one-on-one-attention",
         form_schema="one_on_one_attention_form",
     ),
+    "study_chat_attention_word_replacement": UIAction(
+        id="study_chat_attention_word_replacement",
+        label="Attention Word Replacement",
+        description="One-turn chat study: run normal prefix to assistant, then switch to replacement-word cache from selected layer and generate.",
+        kind="study",
+        command="run-chat-attention-word-replacement",
+        form_schema="chat_attention_word_replacement_form",
+    ),
     "study_qk_params": UIAction(
         id="study_qk_params",
         label="QK Params",
@@ -113,6 +121,14 @@ UI_ACTIONS: dict[str, UIAction] = {
         kind="study",
         command="run-layer-ffn-neuron-logits-table",
         form_schema="layer_ffn_neuron_logits_table_form",
+    ),
+    "study_layer_shortcut": UIAction(
+        id="study_layer_shortcut",
+        label="Layer Shortcut",
+        description="Input one single-token word, choose BOS on/off, loop source layers 1..30, shortcut each layer hidden to configurable target-layer input, and collect top15 logits.",
+        kind="study",
+        command="run-layer-shortcut",
+        form_schema="layer_shortcut_form",
     ),
     "study_single_word": UIAction(
         id="study_single_word",
@@ -231,6 +247,38 @@ def build_command_args(action: UIAction, params: dict[str, Any]) -> list[str]:
             "--include-assistant",
             "true" if include_assistant_flag else "false",
         ]
+    if action.command == "run-chat-attention-word-replacement":
+        include_assistant_marker = params.get("include_assistant_marker")
+        include_assistant_marker_flag = (
+            bool(include_assistant_marker) if include_assistant_marker is not None else True
+        )
+        replace_k = params.get("replace_k")
+        replace_k_flag = bool(replace_k) if replace_k is not None else False
+        replace_layers = params.get("replace_layers")
+        max_new_tokens = params.get("max_new_tokens")
+        temperature = params.get("temperature")
+        top_p = params.get("top_p")
+        return [
+            action.command,
+            "--prompt-text",
+            str(params.get("prompt_text") or "Alice gave Bob a book.Who has the book?Please directly give the name"),
+            "--target-word",
+            str(params.get("target_word") or "Bob"),
+            "--replacement-word",
+            str(params.get("replacement_word") or "BIll"),
+            "--replace-layers",
+            str("0-" if replace_layers is None else replace_layers),
+            "--replace-k",
+            "true" if replace_k_flag else "false",
+            "--max-new-tokens",
+            str(64 if max_new_tokens is None else max_new_tokens),
+            "--temperature",
+            str(0.7 if temperature is None else temperature),
+            "--top-p",
+            str(0.9 if top_p is None else top_p),
+            "--include-assistant-marker",
+            "true" if include_assistant_marker_flag else "false",
+        ]
     if action.command == "run-qk-params":
         view_by_layer = params.get("view_by_layer")
         view_by_layer_flag = bool(view_by_layer) if view_by_layer is not None else True
@@ -329,6 +377,18 @@ def build_command_args(action: UIAction, params: dict[str, Any]) -> list[str]:
             prefix_text,
             "--return-batch-size",
             str(1000 if return_batch_size is None else return_batch_size),
+        ]
+    if action.command == "run-layer-shortcut":
+        include_bos = params.get("include_bos")
+        include_bos_flag = bool(include_bos) if include_bos is not None else True
+        jump_to_layer = params.get("jump_to_layer")
+        return [
+            action.command,
+            str(params.get("word") or "apple"),
+            "--include-bos",
+            "true" if include_bos_flag else "false",
+            "--jump-to-layer",
+            str(32 if jump_to_layer is None else jump_to_layer),
         ]
     if action.command == "run-color-words-experiment":
         return [
