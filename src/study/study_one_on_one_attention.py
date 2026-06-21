@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 from pathlib import Path
 from typing import Any
 
@@ -272,3 +273,31 @@ def run_study(
         "heatmaps": heatmaps,
         "ui_tasks": [{"name": "render_heatmap", "value_key": "heatmaps"}],
     }
+
+
+def register_cli(subparsers: argparse._SubParsersAction, bool_parser) -> None:
+    parser = subparsers.add_parser(
+        "run-one-on-one-attention",
+        help="Input two single-token words and render layer x head attention heatmaps using hidden_store protocol/chat-template context.",
+    )
+    parser.add_argument("token_a", help="Previous token text")
+    parser.add_argument("token_b", help="Current token text")
+    parser.add_argument(
+        "--include-assistant",
+        type=bool_parser,
+        default=False,
+        help="Whether to include assistant chat marker context and render assistant-symbol attention (true/false).",
+    )
+
+
+def try_execute_cli(args: argparse.Namespace, config: dict[str, Any]) -> dict[str, Any] | None:
+    if args.command != "run-one-on-one-attention":
+        return None
+    heatmap = run_study(
+        token_a=str(args.token_a or ""),
+        token_b=str(args.token_b or ""),
+        include_assistant=bool(args.include_assistant),
+        config=config,
+        config_path=args.config,
+    )
+    return {"hidden_state_heatmap": heatmap}

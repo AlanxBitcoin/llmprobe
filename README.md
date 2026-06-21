@@ -1,96 +1,135 @@
-# LLM Probe (Current Version)
+# LLM Probe
 
-`probe` is a local analysis tool for inspecting hidden states of a Llama-family model, running study/probe experiments, and viewing results in a built-in UI.
+LLM Probe is a local research tool for Llama-family models.
+It focuses on hidden-state and neuron-level analysis, with both CLI and built-in UI workflows.
 
-This README matches the current codebase (`src/main.py` as the single entry).
+Single entrypoint:
 
-## 1) What This Project Does
+- `src/main.py`
 
-- Runs local model-based studies and probes.
-- Supports a **hidden state store** (`data/cache/*.bin`) for token-level read-through cache.
-- Provides a local UI (default `http://127.0.0.1:8000`) for study execution and visualization.
-- Includes two single-word hidden-state study flows:
-  - `run-single-word-hidden-state`
-  - `run-single-word-top-100-neurons` (with configurable neuron top-k and intervention layer)
+## What This Project Is For
 
-## 2) Project Entry
+- Run reproducible local studies over hidden states and logits.
+- Perform neuron and layer intervention experiments.
+- Reuse token hidden-state cache for faster repeated experiments.
+- Execute studies from CLI or from the local Web UI.
 
-- Main entry: `src/main.py`
-- Default config: `configs/custom.yaml`
+## Requirements
 
-Common usage:
-
-```bash
-python src/main.py --config configs/custom.yaml
-```
-
-No subcommand starts the app server flow (UI + runtime behavior controlled by config).
-
-## 3) Environment
-
-Recommended:
-
-- Python 3.11+ (current setup uses Python 3.12)
-- CUDA GPU
+- Python 3.11+ (3.12 is commonly used)
+- CUDA GPU (recommended)
 - Local Hugging Face-compatible Llama model directory
 
-Install dependencies from:
+Install dependencies:
 
 ```bash
 pip install -r docs/requirements.txt
 ```
 
-## 4) Key Config Points
+## Quick Start
 
-In `configs/custom.yaml`:
-
-- `model.model_name_or_path`: local model path (required)
-- `runtime.start_llama_api_on_boot`: whether to warm model on app boot
-- `ui.enabled`, `ui.start_server_on_boot`, `ui.host`, `ui.port`
-- `hidden_store.protocol`: one of:
-  - `bos0_assistant0`
-  - `bos1_assistant0` (default)
-  - `bos1_assistant1`
-- `hidden_store.init_on_main_boot`, `hidden_store.preload_on_boot`
-
-## 5) Run UI
+1. Configure model and runtime options in `configs/custom.yaml`.
+2. Start app (no subcommand):
 
 ```bash
 python src/main.py --config configs/custom.yaml
 ```
 
-Then open:
+Default UI URL:
 
 - `http://127.0.0.1:8000`
 
-## 6) Core CLI Commands
+When no subcommand is provided, startup behavior is controlled by config, including:
 
-### Single-word hidden state
+- UI server boot
+- model/runtime warmup
+- hidden-store disk initialization
+
+## Important Config Keys
+
+In `configs/custom.yaml`:
+
+- `model.model_name_or_path`: local model path (required)
+- `runtime.start_llama_api_on_boot`: warm model/runtime on boot
+- `ui.enabled`, `ui.start_server_on_boot`, `ui.host`, `ui.port`
+- `hidden_store.protocol`: `bos0_assistant0`, `bos1_assistant0`, or `bos1_assistant1`
+- `hidden_store.init_on_main_boot`, `hidden_store.preload_on_boot`
+
+## CLI Usage
+
+Base format:
+
+```bash
+python src/main.py --config configs/custom.yaml <command> [args...]
+```
+
+Show all commands:
+
+```bash
+python src/main.py --help
+```
+
+Show command-specific arguments:
+
+```bash
+python src/main.py <command> --help
+```
+
+## Common Command Examples
+
+Single-word hidden state:
 
 ```bash
 python src/main.py --config configs/custom.yaml run-single-word-hidden-state apple
 ```
 
-### Single-word top-100 neuron intervention
+Top-K neuron intervention:
 
 ```bash
 python src/main.py --config configs/custom.yaml run-single-word-top-100-neurons apple --top-k-neurons 100 --intervention-layer 30
 ```
 
-### Build hidden-store cache (protocol build)
+Build token hidden-store cache:
 
 ```bash
 python src/main.py --config configs/custom.yaml build-token-hidden-store --bos true --assistant false --limit 0 --start-token-id 0
 ```
 
-### Other study/probe commands
+## Command Overview (Current)
 
-- `run-single-word`
+Batch and global analysis:
+
 - `run-single-batch`
 - `run-multi-batch`
 - `run-global-analysis`
 - `run-global-analysis-all`
 - `run-color-words-experiment`
+
+Word and sentence studies:
+
+- `run-single-word`
+- `run-single-word-hidden-state`
+- `run-single-word-hidden-state-batch-average`
+- `run-sentence-next-word`
+- `run-token-diff`
+- `run-one-on-one-attention`
+- `run-chat-attention-word-replacement`
+- `run-qk-params`
+- `run-word-sum`
+- `run-word-diff`
+- `run-multi-word`
+
+Neuron and layer intervention:
+
+- `run-single-word-top-100-neurons`
+- `run-layer-neuron-logits-table`
+- `run-layer-ffn-neuron-logits-table`
+- `run-layer-neurons`
+- `run-layer-shortcut`
+- `run-attribute-group-neurons`
+
+Reports and probes:
+
 - `run-dim-report`
 - `run-word-family-report`
 - `run-word-contrast-report`
@@ -98,49 +137,28 @@ python src/main.py --config configs/custom.yaml build-token-hidden-store --bos t
 - `run-attribute-probe`
 - `predict-attributes`
 
-Use command help:
+Cache build:
 
-```bash
-python src/main.py --help
-python src/main.py run-single-word-top-100-neurons --help
-```
+- `build-token-hidden-store`
 
-## 7) Single-Word Study Flow (Current)
+## Output and Cache
 
-For hidden-state studies, runtime flow is:
-
-1. UI triggers study action.
-2. Study layer calls probe layer.
-3. Probe reads hidden-state store first.
-4. On cache miss, probe/runtime fallback runs model and writes back.
-5. Study composes returned payload for UI:
-   - heatmap matrix
-   - top logits table(s)
-   - metadata / task hints
-
-For `run-single-word-top-100-neurons`, extra parameters are included in the response:
-
-- `top_k_neurons`
-- `intervention_layer`
-
-## 8) Output and Cache
-
-- General outputs: `data/outputs/`
+- Outputs: `data/outputs/`
 - Hidden-store files: `data/cache/`
   - `hidden_states.<protocol>.f16.bin`
   - `hidden_states.<protocol>.done.bin`
 
-The `data/` directory is intended for generated runtime artifacts and should typically stay ignored in git.
+The `data/` directory is intended for generated runtime artifacts and is usually ignored by git.
 
-## 9) Source Structure (Practical)
+## Source Layout
 
-- `src/main.py`: CLI/app entry
-- `src/study/`: study orchestration
-- `src/probes/`: probe-layer logic
-- `src/utils/`: hooks, hidden extraction, logits, cache/store utilities
-- `src/ui/`: routes, registry, forms, static frontend
+- `src/main.py`: app and CLI entrypoint
+- `src/study/`: study implementations and CLI registration
+- `src/probes/`: probe logic
+- `src/utils/`: hidden extraction, cache/store, utilities
+- `src/ui/`: routes, registry/forms, static frontend assets
 
-## 10) Notes
+## Notes
 
-- If UI does not show newly added actions after code updates, restart app (old process may still be serving old action registry).
-- Model loading speed and memory behavior depend on quantization and your GPU setup.
+- If UI actions do not refresh after code changes, restart the process.
+- Startup time and GPU memory usage depend on model size, quantization, and hardware setup.

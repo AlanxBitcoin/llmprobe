@@ -9,6 +9,7 @@ from __future__ import annotations
 - 基于平均后的末层向量计算 top-k logits 并返回展示数据。
 """
 
+import argparse
 from pathlib import Path
 from typing import Any
 import re
@@ -270,3 +271,36 @@ def run_study(
         {"name": "render_logits", "value_key": "top_logits"},
     ]
     return heatmap
+
+
+def register_cli(subparsers: argparse._SubParsersAction, bool_parser) -> None:
+    parser = subparsers.add_parser(
+        "run-single-word-hidden-state-batch-average",
+        help="Compute averaged hidden-state matrix from comma-separated words, then return top logits",
+    )
+    parser.add_argument("words_csv", help="Comma-separated words, e.g. apple, banana, orange")
+    parser.add_argument(
+        "--include-bos",
+        type=bool_parser,
+        default=True,
+        help="Whether to include BOS context in batch-average hidden-state extraction (true/false)",
+    )
+    parser.add_argument(
+        "--include-assistant",
+        type=bool_parser,
+        default=False,
+        help="Whether to include assistant chat-prefix context (true/false; requires include-bos=true)",
+    )
+
+
+def try_execute_cli(args: argparse.Namespace, config: dict[str, Any]) -> dict[str, Any] | None:
+    if args.command != "run-single-word-hidden-state-batch-average":
+        return None
+    heatmap = run_study(
+        words_csv=args.words_csv,
+        include_bos=bool(args.include_bos),
+        include_assistant=bool(args.include_assistant),
+        config=config,
+        config_path=args.config,
+    )
+    return {"hidden_state_heatmap": heatmap}

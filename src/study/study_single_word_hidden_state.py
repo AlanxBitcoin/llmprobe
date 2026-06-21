@@ -9,6 +9,7 @@ from __future__ import annotations
 - 统一返回热力图、logits 与 ui_tasks，供前端一次渲染。
 """
 
+import argparse
 from pathlib import Path
 from typing import Any
 
@@ -56,3 +57,36 @@ def run_study(
     ]
 
     return heatmap
+
+
+def register_cli(subparsers: argparse._SubParsersAction, bool_parser) -> None:
+    parser = subparsers.add_parser(
+        "run-single-word-hidden-state",
+        help="Compute and return full hidden-state matrix (embedding + layers) for one word",
+    )
+    parser.add_argument("word", help="Bare English word")
+    parser.add_argument(
+        "--include-bos",
+        type=bool_parser,
+        default=True,
+        help="Whether to include BOS context in single-word hidden-state extraction (true/false)",
+    )
+    parser.add_argument(
+        "--include-assistant",
+        type=bool_parser,
+        default=False,
+        help="Whether to include assistant chat-prefix context (true/false; requires include-bos=true)",
+    )
+
+
+def try_execute_cli(args: argparse.Namespace, config: dict[str, Any]) -> dict[str, Any] | None:
+    if args.command != "run-single-word-hidden-state":
+        return None
+    heatmap = run_study(
+        word=args.word,
+        include_bos=bool(args.include_bos),
+        include_assistant=bool(args.include_assistant),
+        config=config,
+        config_path=args.config,
+    )
+    return {"hidden_state_heatmap": heatmap}

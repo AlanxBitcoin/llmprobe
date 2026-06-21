@@ -16,6 +16,8 @@ from .probe_hidden_state import (
     rank_last_layer_logits_from_heatmap,
 )
 from .probe_attention import fetch_head_attention_metrics_for_input_ids
+from .probe_layer_shortcut import validate_jump_to_layer_1based, validate_shortcut_layers_zero_based
+from .probe_layer_shortcut import validate_jump_to_layer_zero_based
 
 __all__ = [
     "build_probe_dataset",
@@ -30,5 +32,8 @@ __all__ = [
     "run_multi_ffn_neurons_from_layer_probe",
     "run_single_ffn_neuron_from_layer_probe",
     "run_starting_from_middle_layer_probe",
+    "validate_jump_to_layer_1based",
+    "validate_jump_to_layer_zero_based",
+    "validate_shortcut_layers_zero_based",
     "train_linear_probe",
 ]

@@ -194,6 +194,7 @@ function renderForm(fields, initialParams = null) {
     const wrap = document.createElement("div");
     wrap.className = "field";
     wrap.dataset.fieldName = field.name || "";
+    if (field.hidden) wrap.style.display = "none";
     const label = document.createElement("label");
     label.textContent = field.label || field.name;
     wrap.appendChild(label);
@@ -234,6 +235,7 @@ function renderForm(fields, initialParams = null) {
   });
   updateBosAssistantVisibility();
   updatePrefixContextVisibility();
+  updateAwrLayerJumpVisibility();
   updateBatchNameDropdown();
   updateLayerNeuronsListPicker();
   updateAttributeGroupsPicker();
@@ -265,6 +267,7 @@ function collectParams() {
 function updateCommandPreview() {
   updateBosAssistantVisibility();
   updatePrefixContextVisibility();
+  updateAwrLayerJumpVisibility();
   updateBatchNameDropdownVisibility();
   updateLayerNeuronsListPickerVisibility();
   updateAttributeGroupsPickerVisibility();
@@ -504,6 +507,19 @@ async function updateBatchNameDropdown() {
     }
   });
   updateBatchNameDropdownVisibility();
+}
+
+function updateAwrLayerJumpVisibility() {
+  const enableInput = paramsForm.elements.namedItem("enable_layer_jump");
+  const startInput = paramsForm.elements.namedItem("shortcut_start_layer");
+  const targetInput = paramsForm.elements.namedItem("shortcut_target_layer");
+  if (!enableInput || !startInput || !targetInput) return;
+  const startWrap = startInput.closest(".field");
+  const targetWrap = targetInput.closest(".field");
+  if (!startWrap || !targetWrap) return;
+  const enabled = Boolean(enableInput.checked);
+  startWrap.style.display = enabled ? "" : "none";
+  targetWrap.style.display = enabled ? "" : "none";
 }
 
 function extractLayerNeuronListNames(raw) {

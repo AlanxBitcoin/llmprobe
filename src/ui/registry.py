@@ -125,7 +125,7 @@ UI_ACTIONS: dict[str, UIAction] = {
     "study_layer_shortcut": UIAction(
         id="study_layer_shortcut",
         label="Layer Shortcut",
-        description="Input one single-token word, choose BOS on/off, loop source layers 1..30, shortcut each layer hidden to configurable target-layer input, and collect top15 logits.",
+        description="Input one single-token word, choose BOS on/off, loop source layers 0..30, shortcut each layer hidden to configurable target-layer input, and collect top15 logits.",
         kind="study",
         command="run-layer-shortcut",
         form_schema="layer_shortcut_form",
@@ -252,8 +252,12 @@ def build_command_args(action: UIAction, params: dict[str, Any]) -> list[str]:
         include_assistant_marker_flag = (
             bool(include_assistant_marker) if include_assistant_marker is not None else True
         )
+        enable_layer_jump = params.get("enable_layer_jump")
+        enable_layer_jump_flag = bool(enable_layer_jump) if enable_layer_jump is not None else False
+        shortcut_start_layer = params.get("shortcut_start_layer")
+        shortcut_target_layer = params.get("shortcut_target_layer")
         replace_k = params.get("replace_k")
-        replace_k_flag = bool(replace_k) if replace_k is not None else False
+        replace_k_flag = bool(replace_k) if replace_k is not None else True
         replace_layers = params.get("replace_layers")
         max_new_tokens = params.get("max_new_tokens")
         temperature = params.get("temperature")
@@ -265,11 +269,17 @@ def build_command_args(action: UIAction, params: dict[str, Any]) -> list[str]:
             "--target-word",
             str(params.get("target_word") or "Bob"),
             "--replacement-word",
-            str(params.get("replacement_word") or "BIll"),
+            str(params.get("replacement_word") or "Bill"),
             "--replace-layers",
             str("0-" if replace_layers is None else replace_layers),
             "--replace-k",
             "true" if replace_k_flag else "false",
+            "--enable-layer-jump",
+            "true" if enable_layer_jump_flag else "false",
+            "--shortcut-start-layer",
+            str(24 if shortcut_start_layer is None else shortcut_start_layer),
+            "--shortcut-target-layer",
+            str(31 if shortcut_target_layer is None else shortcut_target_layer),
             "--max-new-tokens",
             str(64 if max_new_tokens is None else max_new_tokens),
             "--temperature",
@@ -388,7 +398,7 @@ def build_command_args(action: UIAction, params: dict[str, Any]) -> list[str]:
             "--include-bos",
             "true" if include_bos_flag else "false",
             "--jump-to-layer",
-            str(32 if jump_to_layer is None else jump_to_layer),
+            str(31 if jump_to_layer is None else jump_to_layer),
         ]
     if action.command == "run-color-words-experiment":
         return [

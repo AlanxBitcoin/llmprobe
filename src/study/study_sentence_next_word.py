@@ -8,6 +8,7 @@ from __future__ import annotations
 - 输出热力图与 logits 渲染任务，供前端直接展示。
 """
 
+import argparse
 from pathlib import Path
 from typing import Any
 
@@ -44,3 +45,23 @@ def run_study(
         "logits_error": error,
         "ui_tasks": [{"name": "render_logits", "value_key": "top_logits"}],
     }
+
+
+def register_cli(subparsers: argparse._SubParsersAction, bool_parser) -> None:
+    del bool_parser
+    parser = subparsers.add_parser(
+        "run-sentence-next-word",
+        help="Given one sentence, return top-15 logits for the next token.",
+    )
+    parser.add_argument("sentence", help="Sentence text")
+
+
+def try_execute_cli(args: argparse.Namespace, config: dict[str, Any]) -> dict[str, Any] | None:
+    if args.command != "run-sentence-next-word":
+        return None
+    heatmap = run_study(
+        sentence=str(args.sentence or ""),
+        config=config,
+        config_path=args.config,
+    )
+    return {"hidden_state_heatmap": heatmap}

@@ -56,9 +56,12 @@ FORM_SCHEMAS: dict[str, list[dict[str, Any]]] = {
             "rows": 6,
         },
         {"name": "target_word", "label": "Target Word", "type": "text", "default": "Bob", "required": True},
-        {"name": "replacement_word", "label": "Replacement Word", "type": "text", "default": "BIll", "required": True},
+        {"name": "replacement_word", "label": "Replacement Word", "type": "text", "default": "Bill", "required": True},
         {"name": "replace_layers", "label": "Replace Layers (0-based)", "type": "text", "default": "0-", "required": True},
-        {"name": "replace_k", "label": "Replace K (KV mode)", "type": "checkbox", "default": False},
+        {"name": "replace_k", "label": "Replace K (KV mode)", "type": "checkbox", "default": True, "hidden": True},
+        {"name": "enable_layer_jump", "label": "Enable Layer Jump", "type": "checkbox", "default": False},
+        {"name": "shortcut_start_layer", "label": "Shortcut Start Layer (0-based)", "type": "number", "default": 24, "min": 0, "step": 1},
+        {"name": "shortcut_target_layer", "label": "Shortcut Target Layer (0-based)", "type": "number", "default": 31, "min": 0, "step": 1},
         {"name": "max_new_tokens", "label": "Max New Tokens", "type": "number", "default": 64, "min": 1, "step": 1},
         {"name": "temperature", "label": "Temperature", "type": "number", "default": 0.7, "min": 0, "step": 0.01},
         {"name": "top_p", "label": "Top P", "type": "number", "default": 0.9, "min": 0.05, "max": 1.0, "step": 0.01},
@@ -118,7 +121,7 @@ FORM_SCHEMAS: dict[str, list[dict[str, Any]]] = {
     "layer_shortcut_form": [
         {"name": "word", "label": "Word (Single Token)", "type": "text", "default": "apple", "required": True},
         {"name": "include_bos", "label": "Include BOS", "type": "checkbox", "default": True},
-        {"name": "jump_to_layer", "label": "Jump To Layer (1-based)", "type": "number", "default": 32, "min": 1, "step": 1},
+        {"name": "jump_to_layer", "label": "Jump To Layer (0-based)", "type": "number", "default": 31, "min": 0, "step": 1},
     ],
     "color_words_form": [
         {"name": "word_file", "label": "Word file", "type": "text", "default": "data/color_words.txt"},

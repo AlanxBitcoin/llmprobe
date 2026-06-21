@@ -9,6 +9,7 @@ from __future__ import annotations
 - 返回 token A、token B 及差分热力图用于联动展示。
 """
 
+import argparse
 from pathlib import Path
 from typing import Any
 
@@ -122,3 +123,25 @@ def run_study(
         "protocol_b": str(hm_b.get("protocol") or ""),
         "ui_tasks": [{"name": "render_heatmap", "value_key": "heatmaps"}],
     }
+
+
+def register_cli(subparsers: argparse._SubParsersAction, bool_parser) -> None:
+    del bool_parser
+    parser = subparsers.add_parser(
+        "run-token-diff",
+        help="Given two single-token words, render token A/B hidden states and A-B diff heatmap.",
+    )
+    parser.add_argument("token_a", help="Token A text")
+    parser.add_argument("token_b", help="Token B text")
+
+
+def try_execute_cli(args: argparse.Namespace, config: dict[str, Any]) -> dict[str, Any] | None:
+    if args.command != "run-token-diff":
+        return None
+    heatmap = run_study(
+        token_a=str(args.token_a or ""),
+        token_b=str(args.token_b or ""),
+        config=config,
+        config_path=args.config,
+    )
+    return {"hidden_state_heatmap": heatmap}

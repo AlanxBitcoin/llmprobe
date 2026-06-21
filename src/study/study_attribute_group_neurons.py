@@ -9,6 +9,7 @@ from __future__ import annotations
 - 导出 CSV，并返回可直接用于前端弹窗展示的结构化数据。
 """
 
+import argparse
 from pathlib import Path
 from typing import Any
 import csv
@@ -629,3 +630,42 @@ def run_study(
         "summary_text": summary,
         "ui_tasks": [{"name": "render_text_output", "value_key": "summary_text"}],
     }
+
+
+def register_cli(subparsers: argparse._SubParsersAction, bool_parser) -> None:
+    del bool_parser
+    parser = subparsers.add_parser(
+        "run-attribute-group-neurons",
+        help="Load one attribute group from JSON, collect token hidden-cache stats, and export selected neurons to CSV.",
+    )
+    parser.add_argument(
+        "--selected-attribute-group",
+        type=str,
+        default="",
+        help="Selected attribute group name in JSON (required when multiple groups exist).",
+    )
+    parser.add_argument(
+        "--attribute-groups-json",
+        type=str,
+        default="",
+        help="JSON payload: {groups:[{group_name,tokens},...]}",
+    )
+    parser.add_argument(
+        "--filter-json",
+        type=str,
+        default="",
+        help='Filter params JSON (e.g. [1], [1,2], or {"algorithm":[1]}). Default: [1].',
+    )
+
+
+def try_execute_cli(args: argparse.Namespace, config: dict[str, Any]) -> dict[str, Any] | None:
+    if args.command != "run-attribute-group-neurons":
+        return None
+    heatmap = run_study(
+        attribute_groups_json=str(args.attribute_groups_json or ""),
+        selected_attribute_group=str(args.selected_attribute_group or ""),
+        filter_json=str(args.filter_json or ""),
+        config=config,
+        config_path=args.config,
+    )
+    return {"hidden_state_heatmap": heatmap}

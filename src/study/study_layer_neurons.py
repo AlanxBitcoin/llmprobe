@@ -9,6 +9,7 @@ from __future__ import annotations
 - 返回热力图与 top logits 的前端渲染任务数据。
 """
 
+import argparse
 from pathlib import Path
 from typing import Any
 import json
@@ -623,3 +624,55 @@ def run_study(
             {"name": "render_text_output", "value_key": "generated_text"},
         ],
     }
+
+
+def register_cli(subparsers: argparse._SubParsersAction, bool_parser) -> None:
+    parser = subparsers.add_parser(
+        "run-layer-neurons",
+        help="Apply multiple neuron overrides from JSON once and return heatmap + top-15 logits.",
+    )
+    parser.add_argument(
+        "--use-prefix-context",
+        type=bool_parser,
+        default=False,
+        help="If true, run prefix text first and apply multi-neuron override on that layer hidden state.",
+    )
+    parser.add_argument(
+        "--prefix-text",
+        type=str,
+        default="The apple is red.",
+        help="Prefix sentence used when --use-prefix-context=true.",
+    )
+    parser.add_argument(
+        "--use-random1000-baseline-no-prefix",
+        type=bool_parser,
+        default=True,
+        help="When --use-prefix-context=false, use 1000-token no-prefix baseline as starting hidden state.",
+    )
+    parser.add_argument(
+        "--selected-list-name",
+        type=str,
+        default="",
+        help="Select one list_name when JSON contains multiple lists.",
+    )
+    parser.add_argument(
+        "--layer-neuron-list-json",
+        type=str,
+        default="",
+        help="JSON payload (compact preferred): {list_name,nLayer,neurons:[[nNeuron,value],...]}",
+    )
+
+
+def try_execute_cli(args: argparse.Namespace, config: dict[str, Any]) -> dict[str, Any] | None:
+    if args.command != "run-layer-neurons":
+        return None
+    heatmap = run_study(
+        layer_neuron_list_json=str(args.layer_neuron_list_json or ""),
+        selected_list_name=str(args.selected_list_name or ""),
+        use_prefix_context=bool(args.use_prefix_context),
+        prefix_text=str(args.prefix_text or ""),
+        use_random1000_baseline_no_prefix=bool(args.use_random1000_baseline_no_prefix),
+        config=config,
+        config_path=args.config,
+    )
+    return {"hidden_state_heatmap": heatmap}

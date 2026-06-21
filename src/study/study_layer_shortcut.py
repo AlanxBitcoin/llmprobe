@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 from pathlib import Path
 from typing import Any
 
@@ -8,6 +9,7 @@ import torch
 
 from ..config import load_config
 from ..probes.probe_layer_neuron import run_layer_neuron_batch_to_logits_probe
+from ..probes.probe_layer_shortcut import validate_jump_to_layer_zero_based
 from ..runtime_api import RuntimeRequest, get_runtime_api, start_llama_api
 from ..utils.token_hidden_store import (
     TokenHiddenStore,
@@ -28,7 +30,7 @@ def _get_or_start_runtime_api(config: dict[str, Any]):
 def run_study(
     *,
     word: str,
-    jump_to_layer: int = 32,
+    jump_to_layer: int = 31,
     include_bos: bool = True,
     config: dict[str, Any] | None = None,
     config_path: str | Path = "configs/custom.yaml",
@@ -89,31 +91,21 @@ def run_study(
             "ui_tasks": [{"name": "render_neuron_logits_table", "value_key": "neuron_logits_rows"}],
         }
 
-    # jump_to_layer is 1-based decoder layer number where we inject as that layer's input.
-    # This means start_layer_idx = jump_to_layer - 2.
     try:
-        jump_layer_number = int(jump_to_layer)
+        jump_layer_number, start_layer_idx = validate_jump_to_layer_zero_based(
+            jump_to_layer=int(jump_to_layer),
+            layer_count=int(num_layers),
+        )
     except (TypeError, ValueError):
         return {
             "ok": False,
-            "reason": "invalid_jump_to_layer_type",
-            "jump_to_layer": jump_to_layer,
-            "valid_layer_min": 1,
-            "valid_layer_max": int(num_layers),
-            "neuron_logits_rows": [],
-            "ui_tasks": [{"name": "render_neuron_logits_table", "value_key": "neuron_logits_rows"}],
-        }
-    if not (1 <= int(jump_layer_number) <= int(num_layers)):
-        return {
-            "ok": False,
             "reason": "invalid_jump_to_layer",
-            "jump_to_layer": int(jump_layer_number),
-            "valid_layer_min": 1,
-            "valid_layer_max": int(num_layers),
+            "jump_to_layer": int(jump_to_layer) if str(jump_to_layer).strip().lstrip("-").isdigit() else jump_to_layer,
+            "valid_layer_min": 0,
+            "valid_layer_max": int(num_layers - 1),
             "neuron_logits_rows": [],
             "ui_tasks": [{"name": "render_neuron_logits_table", "value_key": "neuron_logits_rows"}],
         }
-    start_layer_idx = int(jump_layer_number - 2)
     protocol = str(hs_cfg.get("protocol") or "bos1_assistant0")
     input_ids = [int(x) for x in build_protocol_input_ids(tokenizer, protocol, [token_id])]
     input_tensor = torch.tensor([input_ids], dtype=torch.long, device=device)
@@ -131,10 +123,10 @@ def run_study(
             "ui_tasks": [{"name": "render_neuron_logits_table", "value_key": "neuron_logits_rows"}],
         }
 
-    max_source_layer = min(30, int(num_layers - 1))
-    if int(all_layers.shape[0]) <= max_source_layer:
-        max_source_layer = int(all_layers.shape[0] - 1)
-    if max_source_layer < 1:
+    max_source_layer = min(30, int(num_layers - 2), int(jump_layer_number - 1))
+    if int(all_layers.shape[0]) <= int(max_source_layer + 1):
+        max_source_layer = int(all_layers.shape[0] - 2)
+    if max_source_layer < 0:
         return {
             "ok": False,
             "reason": "insufficient_hidden_rows_for_shortcut",
@@ -143,9 +135,10 @@ def run_study(
             "ui_tasks": [{"name": "render_neuron_logits_table", "value_key": "neuron_logits_rows"}],
         }
 
-    source_layers = list(range(1, int(max_source_layer) + 1))
+    source_layers = list(range(0, int(max_source_layer) + 1))
+    source_rows = [int(x + 1) for x in source_layers]
     hidden_batch = torch.as_tensor(
-        all_layers[source_layers, :],
+        all_layers[source_rows, :],
         device=device,
         dtype=model_dtype,
     )
@@ -203,9 +196,9 @@ def run_study(
         "token_id": int(token_id),
         "jump_to_layer": int(jump_layer_number),
         "shortcut_target_layer": int(jump_layer_number),
-        "shortcut_target_layer_input": int(max(0, jump_layer_number - 1)),
-        "remaining_layers_run": int(max(0, num_layers - jump_layer_number + 1)),
-        "source_layer_min": 1,
+        "shortcut_target_layer_input": int(max(0, jump_layer_number)),
+        "remaining_layers_run": int(max(0, num_layers - jump_layer_number)),
+        "source_layer_min": 0,
         "source_layer_max": int(max_source_layer),
         "top_k": 15,
         "row_label_key": "source_layer",
@@ -217,3 +210,36 @@ def run_study(
         "neuron_logits_batches": batches,
         "ui_tasks": [{"name": "render_neuron_logits_table", "value_key": "neuron_logits_batches"}],
     }
+
+
+def register_cli(subparsers: argparse._SubParsersAction, bool_parser) -> None:
+    parser = subparsers.add_parser(
+        "run-layer-shortcut",
+        help="Single-token layer shortcut: layer 0..30 hidden -> configured target layer input, then rank top-15 logits.",
+    )
+    parser.add_argument("word", help="Single-token word")
+    parser.add_argument(
+        "--include-bos",
+        type=bool_parser,
+        default=True,
+        help="Whether to prepend BOS/chat-prefix symbols (true/false). false means only this word token is used.",
+    )
+    parser.add_argument(
+        "--jump-to-layer",
+        type=int,
+        default=31,
+        help="0-based decoder layer number to inject hidden state into (default: 31).",
+    )
+
+
+def try_execute_cli(args: argparse.Namespace, config: dict[str, Any]) -> dict[str, Any] | None:
+    if args.command != "run-layer-shortcut":
+        return None
+    heatmap = run_study(
+        word=str(args.word or ""),
+        jump_to_layer=int(args.jump_to_layer),
+        include_bos=bool(args.include_bos),
+        config=config,
+        config_path=args.config,
+    )
+    return {"hidden_state_heatmap": heatmap}

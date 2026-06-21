@@ -9,6 +9,7 @@ from __future__ import annotations
 - 以“神经元 x 排名位”的表格形式返回结果，便于对比分析。
 """
 
+import argparse
 from pathlib import Path
 from typing import Any
 
@@ -324,3 +325,40 @@ def run_study(
         "neuron_logits_batches": batches,
         "ui_tasks": [{"name": "render_neuron_logits_table", "value_key": "neuron_logits_batches"}],
     }
+
+
+def register_cli(subparsers: argparse._SubParsersAction, bool_parser) -> None:
+    parser = subparsers.add_parser(
+        "run-layer-neuron-logits-table",
+        help="For one layer, activate one neuron (value=10) at a time and rank top-15 logits.",
+    )
+    parser.add_argument("--intervention-layer", type=int, default=30, help="Decoder layer number, 1-based (default: 30)")
+    parser.add_argument("--activation-value", type=float, default=10.0, help="Neuron activation value (default: 10.0)")
+    parser.add_argument(
+        "--use-prefix-context",
+        type=bool_parser,
+        default=False,
+        help="If true, run prefix text first and add single-neuron activation on top of that layer hidden state.",
+    )
+    parser.add_argument(
+        "--prefix-text",
+        type=str,
+        default="The apple is red.",
+        help="Prefix sentence to run before intervention when --use-prefix-context=true.",
+    )
+    parser.add_argument("--return-batch-size", type=int, default=1000, help="Rows per batch in returned payload (default: 1000)")
+
+
+def try_execute_cli(args: argparse.Namespace, config: dict[str, Any]) -> dict[str, Any] | None:
+    if args.command != "run-layer-neuron-logits-table":
+        return None
+    heatmap = run_study(
+        intervention_layer=int(args.intervention_layer),
+        activation_value=float(args.activation_value),
+        use_prefix_context=bool(args.use_prefix_context),
+        prefix_text=str(args.prefix_text or ""),
+        return_batch_size=int(args.return_batch_size),
+        config=config,
+        config_path=args.config,
+    )
+    return {"hidden_state_heatmap": heatmap}

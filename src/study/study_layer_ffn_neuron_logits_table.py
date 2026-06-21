@@ -9,6 +9,7 @@ from __future__ import annotations
 - 统计 LM Head 的 top-k logits，并输出按神经元组织的表格结果。
 """
 
+import argparse
 from pathlib import Path
 from typing import Any
 from datetime import datetime
@@ -779,3 +780,59 @@ def run_study(
         "history_csv_path": history_rel,
         "ui_tasks": [{"name": "render_neuron_logits_table", "value_key": "neuron_logits_batches"}],
     }
+
+
+def register_cli(subparsers: argparse._SubParsersAction, bool_parser) -> None:
+    parser = subparsers.add_parser(
+        "run-layer-ffn-neuron-logits-table",
+        help="For one layer, activate one post-SiLU FFN neuron at a time and rank top-15 logits (or rank directly from W1 in reverse mode).",
+    )
+    parser.add_argument(
+        "--intervention-layer",
+        type=int,
+        default=30,
+        help="Layer id: forward mode uses 1-based; reverse mode uses 0-based layer index for W1(gate_proj) rows.",
+    )
+    parser.add_argument("--activation-value", type=float, default=10.0, help="FFN neuron activation value (default: 10.0)")
+    parser.add_argument(
+        "--include-bos",
+        type=bool_parser,
+        default=True,
+        help="Whether to use BOS protocol (bos1_assistant0) when reading sentence/store context (true/false).",
+    )
+    parser.add_argument(
+        "--use-prefix-context",
+        type=bool_parser,
+        default=False,
+        help="If true, run prefix text first and add single-FFN-neuron activation on top of that layer hidden state.",
+    )
+    parser.add_argument(
+        "--prefix-text",
+        type=str,
+        default="The apple is red.",
+        help="Prefix sentence to run before intervention when --use-prefix-context=true.",
+    )
+    parser.add_argument("--return-batch-size", type=int, default=1000, help="Rows per batch in returned payload (default: 1000)")
+    parser.add_argument(
+        "--reverse",
+        type=bool_parser,
+        default=False,
+        help="If true, compute logits from element-wise combination of each FFN neuron's W1(gate_proj) row and this layer input hidden state.",
+    )
+
+
+def try_execute_cli(args: argparse.Namespace, config: dict[str, Any]) -> dict[str, Any] | None:
+    if args.command != "run-layer-ffn-neuron-logits-table":
+        return None
+    heatmap = run_study(
+        intervention_layer=int(args.intervention_layer),
+        activation_value=float(args.activation_value),
+        include_bos=bool(args.include_bos),
+        use_prefix_context=bool(args.use_prefix_context),
+        prefix_text=str(args.prefix_text or ""),
+        return_batch_size=int(args.return_batch_size),
+        reverse=bool(args.reverse),
+        config=config,
+        config_path=args.config,
+    )
+    return {"hidden_state_heatmap": heatmap}

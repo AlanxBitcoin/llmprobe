@@ -9,6 +9,7 @@ from __future__ import annotations
 - 对比干预前后 logits，支持神经元重要性分析。
 """
 
+import argparse
 from pathlib import Path
 from typing import Any
 
@@ -78,3 +79,27 @@ def run_study(
         {"name": "render_logits_top100", "value_key": "top_logits_top100"},
     ]
     return heatmap
+
+
+def register_cli(subparsers: argparse._SubParsersAction, bool_parser) -> None:
+    del bool_parser
+    parser = subparsers.add_parser(
+        "run-single-word-top-100-neurons",
+        help="Single-word study: heatmap + baseline top15 logits + penultimate-top100 intervention top15 logits",
+    )
+    parser.add_argument("word", help="Bare English word")
+    parser.add_argument("--top-k-neurons", type=int, default=100, help="Keep abs top-K neurons at intervention layer")
+    parser.add_argument("--intervention-layer", type=int, default=30, help="Decoder layer index to intervene (default: 30)")
+
+
+def try_execute_cli(args: argparse.Namespace, config: dict[str, Any]) -> dict[str, Any] | None:
+    if args.command != "run-single-word-top-100-neurons":
+        return None
+    heatmap = run_study(
+        word=args.word,
+        config=config,
+        config_path=args.config,
+        top_k_neurons=int(args.top_k_neurons),
+        intervention_layer=int(args.intervention_layer),
+    )
+    return {"hidden_state_heatmap": heatmap}

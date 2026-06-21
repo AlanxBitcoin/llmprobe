@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 import json
 import re
 from pathlib import Path
@@ -239,3 +240,41 @@ def run_study(
         "heatmaps": heatmaps,
         "ui_tasks": [{"name": "render_heatmap", "value_key": "heatmaps"}],
     }
+
+
+def register_cli(subparsers: argparse._SubParsersAction, bool_parser) -> None:
+    parser = subparsers.add_parser(
+        "run-qk-params",
+        help="Render model Q/K projection-parameter heatmaps (Q-head vs K-head cosine per layer).",
+    )
+    parser.add_argument(
+        "--view-by-layer",
+        type=bool_parser,
+        default=True,
+        help="Whether to render layer x hidden-dim heatmaps (true/false).",
+    )
+    parser.add_argument(
+        "--view-by-head",
+        type=bool_parser,
+        default=False,
+        help="Whether to render layer x head heatmaps (true/false).",
+    )
+    parser.add_argument(
+        "--selected-layer",
+        type=int,
+        default=1,
+        help="Selected decoder layer number, 1-based.",
+    )
+
+
+def try_execute_cli(args: argparse.Namespace, config: dict[str, Any]) -> dict[str, Any] | None:
+    if args.command != "run-qk-params":
+        return None
+    heatmap = run_study(
+        view_by_layer=bool(args.view_by_layer),
+        view_by_head=bool(args.view_by_head),
+        selected_layer=int(args.selected_layer),
+        config=config,
+        config_path=args.config,
+    )
+    return {"hidden_state_heatmap": heatmap}
