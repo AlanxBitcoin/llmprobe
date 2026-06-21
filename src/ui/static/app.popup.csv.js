@@ -1,3 +1,8 @@
+// CSV/Table module boundary:
+// - Owns all table-style rendering (CSV preview + task-based tables).
+// - Owns table task dispatch entry (renderCsvTasksIntoDoc).
+// - Should not own heatmap/canvas rendering (that belongs to app.popup.heatmap.js).
+
 function renderCsvIntoDoc(doc, container, csvPreview) {
   container.innerHTML = "<h3>CSV Preview</h3>";
   if (!csvPreview || !csvPreview.headers || csvPreview.headers.length === 0) {
@@ -138,4 +143,114 @@ function renderCsvIntoDoc(doc, container, csvPreview) {
   table.appendChild(tbody);
   wrap.appendChild(table);
   container.appendChild(wrap);
+}
+
+function renderOutputTokenLogitsTableIntoDoc(doc, container, rows, titleText) {
+  const title = doc.createElement("h3");
+  title.textContent = String(titleText || "Per-Input-Token Top 15 Logits");
+  container.appendChild(title);
+  if (!Array.isArray(rows) || rows.length === 0) {
+    const empty = doc.createElement("div");
+    empty.className = "muted";
+    empty.textContent = "No per-token logits rows returned.";
+    container.appendChild(empty);
+    return;
+  }
+  const wrap = doc.createElement("div");
+  wrap.className = "scroll";
+  const table = doc.createElement("table");
+  table.style.tableLayout = "auto";
+  table.style.width = "max-content";
+
+  const thead = doc.createElement("thead");
+  const hr = doc.createElement("tr");
+  ["token_step", "token_id", "token", "text"].forEach((h) => {
+    const th = doc.createElement("th");
+    th.textContent = h;
+    if (h === "token" || h === "text") {
+      th.style.minWidth = "20ch";
+      th.style.width = "20ch";
+    } else {
+      th.style.width = "10ch";
+    }
+    hr.appendChild(th);
+  });
+  for (let i = 1; i <= 15; i += 1) {
+    const thText = doc.createElement("th");
+    thText.textContent = `r${i}_text`;
+    thText.style.minWidth = "20ch";
+    thText.style.width = "20ch";
+    hr.appendChild(thText);
+    const thLogit = doc.createElement("th");
+    thLogit.textContent = `r${i}_logit`;
+    thLogit.style.width = "12ch";
+    hr.appendChild(thLogit);
+  }
+  thead.appendChild(hr);
+  table.appendChild(thead);
+
+  const tbody = doc.createElement("tbody");
+  rows.forEach((row) => {
+    const tr = doc.createElement("tr");
+    const basic = [
+      Number(row && row.step),
+      Number(row && row.token_id),
+      String((row && row.token) || ""),
+      String((row && row.text) || ""),
+    ];
+    basic.forEach((v, idx) => {
+      const td = doc.createElement("td");
+      if (idx <= 1 && Number.isFinite(v)) td.textContent = String(Math.trunc(v));
+      else td.textContent = String(v || "");
+      if (idx === 2 || idx === 3) {
+        td.style.minWidth = "20ch";
+        td.style.maxWidth = "20ch";
+        td.style.whiteSpace = "nowrap";
+        td.style.overflow = "hidden";
+        td.style.textOverflow = "ellipsis";
+      } else {
+        td.style.whiteSpace = "nowrap";
+      }
+      tr.appendChild(td);
+    });
+    const top = Array.isArray(row && row.top_logits) ? row.top_logits : [];
+    for (let i = 0; i < 15; i += 1) {
+      const item = top[i] || {};
+      const tdText = doc.createElement("td");
+      tdText.textContent = String(item.text || "");
+      tdText.style.minWidth = "20ch";
+      tdText.style.maxWidth = "20ch";
+      tdText.style.whiteSpace = "nowrap";
+      tdText.style.overflow = "hidden";
+      tdText.style.textOverflow = "ellipsis";
+      tr.appendChild(tdText);
+      const tdLogit = doc.createElement("td");
+      const lv = Number(item.logit);
+      tdLogit.textContent = Number.isFinite(lv) ? lv.toFixed(6) : "";
+      tdLogit.style.whiteSpace = "nowrap";
+      tr.appendChild(tdLogit);
+    }
+    tbody.appendChild(tr);
+  });
+  table.appendChild(tbody);
+  wrap.appendChild(table);
+  container.appendChild(wrap);
+}
+
+function renderCsvTasksIntoDoc(doc, container, heatmap) {
+  if (!container || !heatmap || typeof heatmap !== "object") return;
+  const tasks = Array.isArray(heatmap.ui_tasks) ? heatmap.ui_tasks : [];
+  tasks.forEach((task) => {
+    const name = String((task && task.name) || "");
+    const valueKey = String((task && task.value_key) || "");
+    const value = valueKey ? heatmap[valueKey] : undefined;
+    if (name === "render_input_token_logits_table") {
+      renderOutputTokenLogitsTableIntoDoc(
+        doc,
+        container,
+        Array.isArray(value) ? value : [],
+        "Per-Input-Token Top 15 Logits",
+      );
+    }
+  });
 }

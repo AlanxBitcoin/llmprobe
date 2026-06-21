@@ -1,6 +1,12 @@
 ﻿let heatmapThreshold = 2.0;
 let csvStateThreshold = 0.5;
 
+// Popup JS responsibility split:
+// - app.popup.js: orchestration only (window bootstrap, request polling, high-level render flow, function injection).
+// - app.popup.heatmap.js: heatmap/canvas rendering only.
+// - app.popup.csv.js: table/csv rendering only.
+// Rule: do not add new table renderer implementations here unless migrating legacy code.
+
 function escapeHtml(value) {
   return String(value)
     .replace(/&/g, "&amp;")
@@ -322,6 +328,14 @@ function renderResultInWindowPopup(result) {
     hidden.innerHTML = `<h3>Hidden State</h3><div class="error">Heatmap render crashed: ${escapeHtml(String(heatErr && heatErr.message ? heatErr.message : heatErr))}</div>`;
   }
   renderCsvIntoDoc(doc, csv, result ? result.csv_preview : null);
+  try {
+    renderCsvTasksIntoDoc(doc, csv, result && result.hidden_state_heatmap ? result.hidden_state_heatmap : null);
+  } catch (csvTaskErr) {
+    const warn = doc.createElement("div");
+    warn.className = "error";
+    warn.textContent = `CSV task render failed: ${String(csvTaskErr && csvTaskErr.message ? csvTaskErr.message : csvTaskErr)}`;
+    csv.appendChild(warn);
+  }
   renderArtifactsIntoDoc(doc, artifacts, result && Array.isArray(result.artifacts) ? result.artifacts : []);
 }
 
@@ -339,11 +353,13 @@ function ensurePopupRenderer(studyWindow) {
     waitPopupTask,
     renderStudyMetaIntoDoc,
     renderCsvIntoDoc,
+    renderCsvTasksIntoDoc,
     renderArtifactsIntoDoc,
     renderHeatmapIntoDoc,
     renderTextOutputIntoDoc,
     renderOneHeatmapIntoDoc,
     renderTopLogitsTableIntoDoc,
+    renderOutputTokenLogitsTableIntoDoc,
     renderNeuronLogitsTableIntoDoc,
     renderResultInWindowPopup,
   ];

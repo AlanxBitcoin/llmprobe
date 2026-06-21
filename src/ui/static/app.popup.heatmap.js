@@ -1,3 +1,8 @@
+// Heatmap module boundary:
+// - Owns only chart/canvas/heatmap rendering.
+// - May render heatmap-adjacent info text.
+// - Must not own table/csv renderer implementations (put those in app.popup.csv.js).
+
 function heatmapColorFromValue(value, threshold) {
   const n = Number(value);
   if (!Number.isFinite(n)) return "rgb(0,0,0)";
@@ -175,6 +180,7 @@ function renderHeatmapIntoDoc(doc, container, heatmap) {
             String(value ?? ""),
             heatmap,
           );
+          return;
         }
       } catch (taskErr) {
         const warn = doc.createElement("div");
@@ -594,4 +600,5 @@ function renderTopLogitsTableIntoDoc(doc, container, rows, heatmap, titleText, s
   wrap.appendChild(table);
   container.appendChild(wrap);
 }
+
 

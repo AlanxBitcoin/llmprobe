@@ -1,6 +1,10 @@
 from __future__ import annotations
 
 import argparse
+import re
+import unicodedata
+import copy
+import sys
 from types import SimpleNamespace
 from typing import Any
 
@@ -56,7 +60,7 @@ def _as_layer_sequence(past_key_values: Any) -> tuple[Any, ...]:
     if isinstance(past_key_values, (list, tuple)):
         return tuple(past_key_values)
     layers = getattr(past_key_values, "layers", None)
-    if isinstance(layers, list):
+    if isinstance(layers, (list, tuple)):
         return tuple(layers)
     try:
         return tuple(iter(past_key_values))
@@ -70,32 +74,67 @@ def _merge_past_key_values(
     replaced: Any,
     replace_layer_indices_zero_based: set[int],
     replace_k: bool,
+    kv_replace_mode: int = 3,
+    target_token_index: int | None = None,
 ) -> Any:
     # Preferred path for transformers>=5 Cache objects (e.g. DynamicCache):
     # mutate original.layers in place to keep Cache type and metadata intact.
     original_layers_obj = getattr(original, "layers", None)
     replaced_layers_obj = getattr(replaced, "layers", None)
-    if isinstance(original_layers_obj, list) and isinstance(replaced_layers_obj, list):
+    if isinstance(original_layers_obj, (list, tuple)) and isinstance(replaced_layers_obj, (list, tuple)):
         if len(original_layers_obj) != len(replaced_layers_obj):
             raise ValueError(
                 f"Cannot merge cache layers with different counts: {len(original_layers_obj)} vs {len(replaced_layers_obj)}"
             )
+        if int(kv_replace_mode) in (1, 2) and target_token_index is None:
+            raise ValueError("kv_replace_mode=1/2 requires target_token_index")
+        mode2_boundary_layer = max(replace_layer_indices_zero_based) if replace_layer_indices_zero_based else -1
         for i in range(len(original_layers_obj)):
-            if int(i) not in replace_layer_indices_zero_based:
+            in_replace_layer = int(i) in replace_layer_indices_zero_based
+            mode2_after_replace_layer = int(kv_replace_mode) == 2 and int(i) > int(mode2_boundary_layer)
+            if not in_replace_layer and not mode2_after_replace_layer:
                 continue
             original_layer = original_layers_obj[i]
             replaced_layer = replaced_layers_obj[i]
             # CacheLayer path (transformers>=5): replace V always; replace K only when requested.
             if hasattr(original_layer, "values") and hasattr(replaced_layer, "values"):
-                original_layer.values = replaced_layer.values
+                if int(kv_replace_mode) == 1 or (int(kv_replace_mode) == 2 and in_replace_layer):
+                    pos = int(target_token_index)
+                    if int(getattr(original_layer.values, "shape", [0, 0, 0, 0])[2]) <= pos:
+                        raise ValueError(f"target token index out of range for original V cache: idx={pos}")
+                    if int(getattr(replaced_layer.values, "shape", [0, 0, 0, 0])[2]) <= pos:
+                        raise ValueError(f"target token index out of range for replaced V cache: idx={pos}")
+                    original_layer.values[:, :, pos, :] = replaced_layer.values[:, :, pos, :]
+                elif int(kv_replace_mode) == 2 and mode2_after_replace_layer:
+                    start = int(target_token_index) + 1
+                    seq_len = int(getattr(original_layer.values, "shape", [0, 0, 0, 0])[2])
+                    if start < seq_len:
+                        original_layer.values[:, :, start:, :] = replaced_layer.values[:, :, start:, :]
+                else:
+                    original_layer.values = replaced_layer.values
             else:
-                original_layers_obj[i] = replaced_layer
+                if isinstance(original_layers_obj, list):
+                    original_layers_obj[i] = replaced_layer
                 continue
             if bool(replace_k):
                 if hasattr(original_layer, "keys") and hasattr(replaced_layer, "keys"):
-                    original_layer.keys = replaced_layer.keys
+                    if int(kv_replace_mode) == 1 or (int(kv_replace_mode) == 2 and in_replace_layer):
+                        pos = int(target_token_index)
+                        if int(getattr(original_layer.keys, "shape", [0, 0, 0, 0])[2]) <= pos:
+                            raise ValueError(f"target token index out of range for original K cache: idx={pos}")
+                        if int(getattr(replaced_layer.keys, "shape", [0, 0, 0, 0])[2]) <= pos:
+                            raise ValueError(f"target token index out of range for replaced K cache: idx={pos}")
+                        original_layer.keys[:, :, pos, :] = replaced_layer.keys[:, :, pos, :]
+                    elif int(kv_replace_mode) == 2 and mode2_after_replace_layer:
+                        start = int(target_token_index) + 1
+                        seq_len = int(getattr(original_layer.keys, "shape", [0, 0, 0, 0])[2])
+                        if start < seq_len:
+                            original_layer.keys[:, :, start:, :] = replaced_layer.keys[:, :, start:, :]
+                    else:
+                        original_layer.keys = replaced_layer.keys
                 else:
-                    original_layers_obj[i] = replaced_layer
+                    if isinstance(original_layers_obj, list):
+                        original_layers_obj[i] = replaced_layer
         return original
 
     # Legacy tuple/list fallback.
@@ -105,12 +144,17 @@ def _merge_past_key_values(
         raise ValueError(
             f"Cannot merge caches with different layer counts: {len(original_layers)} vs {len(replaced_layers)}"
         )
+    if int(kv_replace_mode) in (1, 2) and target_token_index is None:
+        raise ValueError("kv_replace_mode=1/2 requires target_token_index")
+    mode2_boundary_layer = max(replace_layer_indices_zero_based) if replace_layer_indices_zero_based else -1
     out: list[Any] = []
     for i in range(len(original_layers)):
-        if int(i) not in replace_layer_indices_zero_based:
+        in_replace_layer = int(i) in replace_layer_indices_zero_based
+        mode2_after_replace_layer = int(kv_replace_mode) == 2 and int(i) > int(mode2_boundary_layer)
+        if not in_replace_layer and not mode2_after_replace_layer:
             out.append(original_layers[i])
             continue
-        if bool(replace_k):
+        if int(kv_replace_mode) == 3 and bool(replace_k):
             out.append(replaced_layers[i])
             continue
         orig_item = original_layers[i]
@@ -118,7 +162,30 @@ def _merge_past_key_values(
         if isinstance(orig_item, (list, tuple)) and isinstance(repl_item, (list, tuple)):
             if len(orig_item) >= 2 and len(repl_item) >= 2:
                 merged = list(orig_item)
-                merged[1] = repl_item[1]  # replace V only
+                if int(kv_replace_mode) == 1 or (int(kv_replace_mode) == 2 and in_replace_layer):
+                    pos = int(target_token_index)
+                    if torch.is_tensor(orig_item[1]) and torch.is_tensor(repl_item[1]):
+                        merged_v = orig_item[1].clone()
+                        merged_v[:, :, pos, :] = repl_item[1][:, :, pos, :]
+                        merged[1] = merged_v
+                    if bool(replace_k) and torch.is_tensor(orig_item[0]) and torch.is_tensor(repl_item[0]):
+                        merged_k = orig_item[0].clone()
+                        merged_k[:, :, pos, :] = repl_item[0][:, :, pos, :]
+                        merged[0] = merged_k
+                elif int(kv_replace_mode) == 2 and mode2_after_replace_layer:
+                    start = int(target_token_index) + 1
+                    if torch.is_tensor(orig_item[1]) and torch.is_tensor(repl_item[1]):
+                        merged_v = orig_item[1].clone()
+                        if start < int(merged_v.shape[2]):
+                            merged_v[:, :, start:, :] = repl_item[1][:, :, start:, :]
+                        merged[1] = merged_v
+                    if bool(replace_k) and torch.is_tensor(orig_item[0]) and torch.is_tensor(repl_item[0]):
+                        merged_k = orig_item[0].clone()
+                        if start < int(merged_k.shape[2]):
+                            merged_k[:, :, start:, :] = repl_item[0][:, :, start:, :]
+                        merged[0] = merged_k
+                else:
+                    merged[1] = repl_item[1]  # replace V only
                 out.append(tuple(merged))
                 continue
         out.append(orig_item)
@@ -129,7 +196,7 @@ def _parse_replace_layers_spec(spec: str, *, layer_count: int) -> tuple[set[int]
     raw = str(spec or "").strip()
     if not raw:
         raise ValueError("replace_layers is required.")
-    normalized = raw.replace("，", ",").replace("、", ",").replace(" ", "")
+    normalized = raw.replace(chr(65292), ",").replace(chr(12289), ",").replace(" ", "")
     parts = [p for p in normalized.split(",") if p]
     if not parts:
         raise ValueError("replace_layers is empty.")
@@ -201,37 +268,710 @@ def _sample_next_id(
     return int(sampled.item())
 
 
+def _parse_kv_replace_mode(value: Any) -> int:
+    try:
+        mode = int(value)
+    except Exception as exc:  # noqa: BLE001
+        raise ValueError(f"kv_replace_mode must be 1/2/3, got: {value!r}") from exc
+    if mode not in (1, 2, 3):
+        raise ValueError(f"kv_replace_mode must be 1/2/3, got: {mode}")
+    return int(mode)
+
+
+def _single_diff_index(ids_a: list[int], ids_b: list[int]) -> int:
+    if len(ids_a) != len(ids_b):
+        raise ValueError("kv_replace_mode 1/2 requires equal tokenized prefix length.")
+    diffs = [i for i, (a, b) in enumerate(zip(ids_a, ids_b)) if int(a) != int(b)]
+    if len(diffs) != 1:
+        raise ValueError(
+            f"kv_replace_mode 1/2 requires exactly one token difference in prefix, got {len(diffs)}."
+        )
+    return int(diffs[0])
+
+def _resolve_single_token_candidates(tokenizer, text: str) -> list[int]:
+    raw = str(text or "").strip()
+    if not raw:
+        return []
+    # Normalize full-width punctuation and trim quote wrappers.
+    normalized = unicodedata.normalize("NFKC", raw).strip("\"'“”’")
+    candidate_texts: list[str] = [raw]
+    if normalized and normalized != raw:
+        candidate_texts.append(normalized)
+    # Explicitly support both half/full-width question marks.
+    if raw == "?" or normalized == "?":
+        candidate_texts.append("？")
+    if raw == "？" or normalized == "？":
+        candidate_texts.append("?")
+    # Deduplicate while preserving order.
+    dedup_texts: list[str] = []
+    seen_texts: set[str] = set()
+    for txt in candidate_texts:
+        if not txt or txt in seen_texts:
+            continue
+        seen_texts.add(txt)
+        dedup_texts.append(txt)
+    # Try both forms because many BPE vocabularies encode in-context words
+    # as leading-space tokens (e.g. " book"), while standalone input may be "book".
+    candidates: list[list[int]] = []
+    for txt in dedup_texts:
+        ids_plain = [int(x) for x in (tokenizer(txt, add_special_tokens=False).get("input_ids") or [])]
+        ids_space = [int(x) for x in (tokenizer(f" {txt}", add_special_tokens=False).get("input_ids") or [])]
+        if ids_plain:
+            candidates.append(ids_plain)
+        if ids_space:
+            candidates.append(ids_space)
+    out: list[int] = []
+    seen: set[int] = set()
+    for seq in candidates:
+        if len(seq) != 1:
+            continue
+        tid = int(seq[0])
+        if tid in seen:
+            continue
+        seen.add(tid)
+        out.append(tid)
+    return out
+
+
+def _resolve_token_id_sequences(tokenizer, text: str) -> list[list[int]]:
+    raw = str(text or "").strip()
+    if not raw:
+        return []
+    seq_plain = [int(x) for x in (tokenizer(raw, add_special_tokens=False).get("input_ids") or [])]
+    seq_space = [int(x) for x in (tokenizer(f" {raw}", add_special_tokens=False).get("input_ids") or [])]
+    out: list[list[int]] = []
+    seen: set[tuple[int, ...]] = set()
+    for seq in (seq_plain, seq_space):
+        if not seq:
+            continue
+        key = tuple(int(x) for x in seq)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append([int(x) for x in seq])
+    return out
+
+
+def _parse_ignore_token_id_list(tokenizer, text: str) -> tuple[list[str], list[int]]:
+    raw = str(text or "").strip()
+    if not raw:
+        return [], []
+    parts = [p for p in re.split(r"[\s,]+", raw) if p]
+    token_ids: list[int] = []
+    seen: set[int] = set()
+    for part in parts:
+        candidates = _resolve_single_token_candidates(tokenizer, part)
+        if not candidates:
+            raise ValueError(
+                f"ignore token must map to one token (or one leading-space token): {part!r}"
+            )
+        for tid in candidates:
+            tid_int = int(tid)
+            if tid_int in seen:
+                continue
+            seen.add(tid_int)
+            token_ids.append(tid_int)
+    return parts, token_ids
+
+
+def _prepare_replaced_cache_mode_1(
+    *,
+    model,
+    device,
+    prefix_ids: list[int],
+    prefix_ids_replaced: list[int],
+) -> tuple[Any, int]:
+    target_token_index = _single_diff_index(prefix_ids, prefix_ids_replaced)
+    replaced_target_prefix = prefix_ids[:int(target_token_index)] + [int(prefix_ids_replaced[int(target_token_index)])]
+    replaced_target_tensor = torch.tensor([replaced_target_prefix], dtype=torch.long, device=device)
+    replaced_target_prefill = model(
+        input_ids=replaced_target_tensor,
+        use_cache=True,
+        return_dict=True,
+    )
+    return replaced_target_prefill.past_key_values, int(target_token_index)
+
+
+def _prepare_replaced_cache_mode_2(
+    *,
+    model,
+    device,
+    tokenizer,
+    prefix_ids: list[int],
+    prefix_ids_replaced: list[int],
+    replace_layer_indices_zero_based: set[int],
+    replace_k: bool,
+) -> tuple[Any, int, list[dict[str, Any]]]:
+    target_token_index = _single_diff_index(prefix_ids, prefix_ids_replaced)
+    input_token_top_logits: list[dict[str, Any]] = []
+    prefix_before_target = prefix_ids[:int(target_token_index)]
+    cache_before = None
+    if prefix_before_target:
+        before_tensor = torch.tensor([prefix_before_target], dtype=torch.long, device=device)
+        out_before = model(
+            input_ids=before_tensor,
+            use_cache=True,
+            return_dict=True,
+        )
+        cache_before = out_before.past_key_values
+        input_token_top_logits.extend(
+            _rows_from_prefill_logits(
+                tokenizer=tokenizer,
+                token_ids=prefix_before_target,
+                logits_3d=getattr(out_before, "logits", None),
+                start_step=0,
+                top_k=15,
+            )
+        )
+
+    original_target_token = int(prefix_ids[int(target_token_index)])
+    replaced_target_token = int(prefix_ids_replaced[int(target_token_index)])
+    # DynamicCache can be mutated in-place by model forward; use isolated cache
+    # copies for original/replaced target-token passes to keep token position aligned.
+    past_for_original = copy.deepcopy(cache_before) if cache_before is not None else None
+    past_for_replaced = copy.deepcopy(cache_before) if cache_before is not None else None
+    out_target_original = model(
+        input_ids=torch.tensor([[original_target_token]], dtype=torch.long, device=device),
+        past_key_values=past_for_original,
+        use_cache=True,
+        return_dict=True,
+    )
+    out_target_replaced = model(
+        input_ids=torch.tensor([[replaced_target_token]], dtype=torch.long, device=device),
+        past_key_values=past_for_replaced,
+        use_cache=True,
+        return_dict=True,
+    )
+    input_token_top_logits.append(
+        _build_input_token_logits_row(
+            tokenizer=tokenizer,
+            step_index=int(len(input_token_top_logits)),
+            token_id=int(original_target_token),
+            logits=out_target_original.logits[:, -1, :],
+            top_k=15,
+        )
+    )
+    # mode2 core: at the target step, each selected layer takes replaced stream KV
+    # while unselected layers keep original stream KV.
+    cache = _merge_past_key_values(
+        original=copy.deepcopy(out_target_original.past_key_values),
+        replaced=out_target_replaced.past_key_values,
+        replace_layer_indices_zero_based=replace_layer_indices_zero_based,
+        replace_k=bool(replace_k),
+        kv_replace_mode=3,
+        target_token_index=int(target_token_index),
+    )
+    for tok_id in prefix_ids[int(target_token_index) + 1 :]:
+        out_step = model(
+            input_ids=torch.tensor([[int(tok_id)]], dtype=torch.long, device=device),
+            past_key_values=cache,
+            use_cache=True,
+            return_dict=True,
+        )
+        cache = out_step.past_key_values
+        input_token_top_logits.append(
+            _build_input_token_logits_row(
+                tokenizer=tokenizer,
+                step_index=int(len(input_token_top_logits)),
+                token_id=int(tok_id),
+                logits=out_step.logits[:, -1, :],
+                top_k=15,
+            )
+        )
+    return cache, int(target_token_index), input_token_top_logits
+
+
+def _prepare_replaced_cache_mode_3(
+    *,
+    model,
+    replaced_prefix_tensor: torch.Tensor,
+) -> tuple[Any, None, Any]:
+    replaced_prefill = model(
+        input_ids=replaced_prefix_tensor,
+        use_cache=True,
+        return_dict=True,
+    )
+    return replaced_prefill.past_key_values, None, getattr(replaced_prefill, "logits", None)
+
+
+def _prepare_replaced_cache_ignore_mode_2(
+    *,
+    model,
+    device,
+    tokenizer,
+    prefix_ids: list[int],
+    prefix_ids_replaced: list[int],
+    replace_layer_indices_zero_based: set[int],
+    replace_k: bool,
+    ignore_token_ids: list[int],
+    ) -> tuple[Any, int, list[dict[str, Any]]]:
+    # 1) Run the normal stream once to build baseline cache kv_cache0.
+    if not prefix_ids:
+        raise ValueError("ignore_mode2 requires non-empty prefix tokens.")
+    out_normal = model(
+        input_ids=torch.tensor([prefix_ids], dtype=torch.long, device=device),
+        use_cache=True,
+        return_dict=True,
+    )
+    kv_cache0 = out_normal.past_key_values
+    input_token_top_logits: list[dict[str, Any]] = []
+
+    # 2) Build kv_cache_replaced at target token by layer-wise mixing.
+    target_token_index = _single_diff_index(prefix_ids, prefix_ids_replaced)
+    prefix_before_target = prefix_ids[:int(target_token_index)]
+    cache_before = None
+
+    def _truncate_cache_to_prefix_len(cache_obj: Any, seq_len: int) -> Any:
+        keep = max(0, int(seq_len))
+        layers_obj = getattr(cache_obj, "layers", None)
+        if isinstance(layers_obj, list):
+            for layer in layers_obj:
+                if hasattr(layer, "values") and torch.is_tensor(layer.values):
+                    layer.values = layer.values[:, :, :keep, :]
+                if hasattr(layer, "keys") and torch.is_tensor(layer.keys):
+                    layer.keys = layer.keys[:, :, :keep, :]
+            return cache_obj
+        legacy_layers = _as_layer_sequence(cache_obj)
+        sliced: list[Any] = []
+        for item in legacy_layers:
+            if isinstance(item, (list, tuple)) and len(item) >= 2 and torch.is_tensor(item[1]):
+                k = item[0]
+                v = item[1]
+                k2 = k[:, :, :keep, :] if torch.is_tensor(k) else k
+                v2 = v[:, :, :keep, :]
+                sliced.append((k2, v2))
+            else:
+                sliced.append(item)
+        return tuple(sliced)
+
+    if prefix_before_target:
+        # Do not rerun prefix: directly copy/truncate from kv_cache0.
+        cache_before = _truncate_cache_to_prefix_len(copy.deepcopy(kv_cache0), int(target_token_index))
+        input_token_top_logits.extend(
+            _rows_from_prefill_logits(
+                tokenizer=tokenizer,
+                token_ids=prefix_before_target,
+                logits_3d=getattr(out_normal, "logits", None),
+                start_step=0,
+                top_k=15,
+            )
+        )
+
+    original_target_token = int(prefix_ids[int(target_token_index)])
+    replaced_target_token = int(prefix_ids_replaced[int(target_token_index)])
+    out_target_original = _truncate_cache_to_prefix_len(
+        copy.deepcopy(kv_cache0),
+        int(target_token_index) + 1,
+    )
+    out_target_replaced = model(
+        input_ids=torch.tensor([[replaced_target_token]], dtype=torch.long, device=device),
+        past_key_values=(copy.deepcopy(cache_before) if cache_before is not None else None),
+        use_cache=True,
+        return_dict=True,
+    )
+    input_token_top_logits.append(
+        _build_input_token_logits_row(
+            tokenizer=tokenizer,
+            step_index=int(len(input_token_top_logits)),
+            token_id=int(original_target_token),
+            logits=out_target_replaced.logits[:, -1, :],
+            top_k=15,
+        )
+    )
+
+    # For the target token: replaced layers use replacement-token KV,
+    # non-replaced layers keep original-token KV.
+    merged_target_cache = _merge_past_key_values(
+        original=copy.deepcopy(out_target_original),
+        replaced=out_target_replaced.past_key_values,
+        replace_layer_indices_zero_based=replace_layer_indices_zero_based,
+        replace_k=bool(replace_k),
+        kv_replace_mode=1,
+        target_token_index=int(target_token_index),
+    )
+
+    # Copy one absolute token slot from source cache into target cache (all layers, K+V).
+    def _copy_token_from_source(*, target_cache: Any, source_cache: Any, token_pos: int) -> Any:
+        pos = int(token_pos)
+        target_layers_obj = getattr(target_cache, "layers", None)
+        source_layers_obj = getattr(source_cache, "layers", None)
+        if isinstance(target_layers_obj, list) and isinstance(source_layers_obj, list):
+            if len(target_layers_obj) != len(source_layers_obj):
+                raise ValueError(
+                    f"Cannot copy cache layers with different counts: {len(target_layers_obj)} vs {len(source_layers_obj)}"
+                )
+            for i in range(len(target_layers_obj)):
+                target_layer = target_layers_obj[i]
+                source_layer = source_layers_obj[i]
+                if hasattr(target_layer, "values") and hasattr(source_layer, "values"):
+                    tgt_v = target_layer.values
+                    src_v = source_layer.values
+                    tgt_seq = int(getattr(tgt_v, "shape", [0, 0, 0, 0])[2])
+                    src_seq = int(getattr(src_v, "shape", [0, 0, 0, 0])[2])
+                    if src_seq <= pos:
+                        raise ValueError(f"target token index out of range for source V cache: idx={pos}")
+                    if tgt_seq <= pos:
+                        target_layer.values = torch.cat([tgt_v, src_v[:, :, tgt_seq : pos + 1, :]], dim=2)
+                    target_layer.values[:, :, pos, :] = src_v[:, :, pos, :]
+                    if hasattr(target_layer, "keys") and hasattr(source_layer, "keys"):
+                        tgt_k = target_layer.keys
+                        src_k = source_layer.keys
+                        tgt_k_seq = int(getattr(tgt_k, "shape", [0, 0, 0, 0])[2])
+                        src_k_seq = int(getattr(src_k, "shape", [0, 0, 0, 0])[2])
+                        if src_k_seq <= pos:
+                            raise ValueError(f"target token index out of range for source K cache: idx={pos}")
+                        if tgt_k_seq <= pos:
+                            target_layer.keys = torch.cat([tgt_k, src_k[:, :, tgt_k_seq : pos + 1, :]], dim=2)
+                        target_layer.keys[:, :, pos, :] = src_k[:, :, pos, :]
+                else:
+                    target_layers_obj[i] = source_layer
+            return target_cache
+
+        target_layers = _as_layer_sequence(target_cache)
+        source_layers = _as_layer_sequence(source_cache)
+        if len(target_layers) != len(source_layers):
+            raise ValueError(
+                f"Cannot copy caches with different layer counts: {len(target_layers)} vs {len(source_layers)}"
+            )
+        out_layers: list[Any] = []
+        for target_item, source_item in zip(target_layers, source_layers):
+            if isinstance(target_item, (list, tuple)) and isinstance(source_item, (list, tuple)):
+                if len(target_item) >= 2 and len(source_item) >= 2:
+                    tgt_k, tgt_v = target_item[0], target_item[1]
+                    src_k, src_v = source_item[0], source_item[1]
+                    if torch.is_tensor(tgt_v) and torch.is_tensor(src_v):
+                        merged_v = tgt_v.clone()
+                        tgt_seq = int(merged_v.shape[2])
+                        src_seq = int(src_v.shape[2])
+                        if src_seq <= pos:
+                            raise ValueError(f"target token index out of range for source V cache: idx={pos}")
+                        if tgt_seq <= pos:
+                            merged_v = torch.cat([merged_v, src_v[:, :, tgt_seq : pos + 1, :]], dim=2)
+                        merged_v[:, :, pos, :] = src_v[:, :, pos, :]
+                        merged_k = tgt_k
+                        if torch.is_tensor(tgt_k) and torch.is_tensor(src_k):
+                            merged_k = tgt_k.clone()
+                            tgt_k_seq = int(merged_k.shape[2])
+                            src_k_seq = int(src_k.shape[2])
+                            if src_k_seq <= pos:
+                                raise ValueError(f"target token index out of range for source K cache: idx={pos}")
+                            if tgt_k_seq <= pos:
+                                merged_k = torch.cat([merged_k, src_k[:, :, tgt_k_seq : pos + 1, :]], dim=2)
+                            merged_k[:, :, pos, :] = src_k[:, :, pos, :]
+                        out_layers.append((merged_k, merged_v))
+                        continue
+            out_layers.append(source_item)
+        return tuple(out_layers)
+
+    # Build kv_cache_replaced in two steps:
+    # 1) create merged target-token KV;
+    # 2) append/copy only this token onto prefix cache.
+    base_prefix_cache = (
+        copy.deepcopy(cache_before)
+        if cache_before is not None
+        else _truncate_cache_to_prefix_len(copy.deepcopy(kv_cache0), 0)
+    )
+    kv_cache_replaced = _copy_token_from_source(
+        target_cache=base_prefix_cache,
+        source_cache=merged_target_cache,
+        token_pos=int(target_token_index),
+    )
+   # kv_cache0=_copy_token_from_source(
+   #     target_cache=kv_cache0,
+   #     source_cache=merged_target_cache,
+   #     token_pos=int(target_token_index),
+   # )
+
+    # 3) From token right after target:
+    #    - if token is in ignore list: directly copy this token from kv_cache0
+    #    - otherwise: run directly on previous kv_cache_replaced
+    ignore_id_set = {int(x) for x in (ignore_token_ids or [])}
+    for abs_pos in range(int(target_token_index) + 1, len(prefix_ids)):
+        tok_id = int(prefix_ids[abs_pos])
+
+        if tok_id in ignore_id_set:
+            print(
+                f"[ignore-mode2] ignored token pos={int(abs_pos)} id={int(tok_id)} "
+                f"text={_safe_decode_token(tokenizer, int(tok_id))!r}",
+                file=sys.stderr,
+                flush=True,
+            )
+            kv_cache_replaced = _copy_token_from_source(
+                target_cache=kv_cache_replaced,
+                source_cache=kv_cache0,
+                token_pos=int(abs_pos),
+            )
+            logits_row = None
+            normal_logits = getattr(out_normal, "logits", None)
+            if torch.is_tensor(normal_logits) and normal_logits.ndim == 3 and int(abs_pos) < int(normal_logits.shape[1]):
+                logits_row = normal_logits[:, int(abs_pos), :]
+            if torch.is_tensor(logits_row):
+                input_token_top_logits.append(
+                    _build_input_token_logits_row(
+                        tokenizer=tokenizer,
+                        step_index=int(len(input_token_top_logits)),
+                        token_id=int(tok_id),
+                        logits=logits_row,
+                        top_k=15,
+                    )
+                )
+            continue
+
+        # Non-ignore token: run one step from previous kv_cache_replaced context.
+        out_step_replaced = model(
+            input_ids=torch.tensor([[tok_id]], dtype=torch.long, device=device),
+            past_key_values=kv_cache_replaced,
+            use_cache=True,
+            return_dict=True,
+        )
+        kv_cache_replaced = out_step_replaced.past_key_values
+        input_token_top_logits.append(
+            _build_input_token_logits_row(
+                tokenizer=tokenizer,
+                step_index=int(len(input_token_top_logits)),
+                token_id=int(tok_id),
+                logits=out_step_replaced.logits[:, -1, :],
+                top_k=15,
+            )
+        )
+    return kv_cache_replaced, int(target_token_index), input_token_top_logits   
+    #return kv_cache0, int(target_token_index), input_token_top_logits   
+
+
+def _prepare_replaced_cache_ignore_mode_3(
+    *,
+    model,
+    device,
+    tokenizer,
+    prefix_ids: list[int],
+    prefix_ids_replaced: list[int],
+    replace_layer_indices_zero_based: set[int],
+    replace_k: bool,
+    ignore_token_ids: list[int],
+) -> tuple[Any, int, Any]:
+    # Copy mode2 setup skeleton: keep baseline kv_cache0 path unchanged.
+    if not prefix_ids:
+        raise ValueError("ignore_mode3 requires non-empty prefix tokens.")
+    out_normal = model(
+        input_ids=torch.tensor([prefix_ids], dtype=torch.long, device=device),
+        use_cache=True,
+        return_dict=True,
+    )
+    kv_cache0 = out_normal.past_key_values
+
+    # Replace target word and run full replaced prefix to get kv_cache1.
+    target_token_index = _single_diff_index(prefix_ids, prefix_ids_replaced)
+    out_replaced_full = model(
+        input_ids=torch.tensor([prefix_ids_replaced], dtype=torch.long, device=device),
+        use_cache=True,
+        return_dict=True,
+    )
+    kv_cache1 = out_replaced_full.past_key_values
+    replaced_logits = getattr(out_replaced_full, "logits", None)
+
+    # Build kv_cache_replaced token-by-token from kv_cache0 and kv_cache1.
+    kv_cache_replaced = copy.deepcopy(kv_cache0)
+    ignore_id_set = {int(x) for x in (ignore_token_ids or [])}
+
+    layers_obj = getattr(kv_cache_replaced, "layers", None)
+    if isinstance(layers_obj, list):
+        all_layers = set(range(len(layers_obj)))
+    else:
+        all_layers = set(range(len(_as_layer_sequence(kv_cache_replaced))))
+
+    for pos, tok_id in enumerate(prefix_ids):
+        # Step A: always copy this token slot from kv_cache0.
+        kv_cache_replaced = _merge_past_key_values(
+            original=kv_cache_replaced,
+            replaced=kv_cache0,
+            replace_layer_indices_zero_based=all_layers,
+            replace_k=True,
+            kv_replace_mode=1,
+            target_token_index=int(pos),
+        )
+
+        # Step B: if token is ignored, skip replacement for this token.
+        if int(tok_id) in ignore_id_set:
+            print(
+                f"[ignore-mode3] ignored token pos={int(pos)} id={int(tok_id)} "
+                f"text={_safe_decode_token(tokenizer, int(tok_id))!r}",
+                file=sys.stderr,
+                flush=True,
+            )
+            continue
+
+        # Step C: for non-ignore token, only selected layers use kv_cache1.
+        kv_cache_replaced = _merge_past_key_values(
+            original=kv_cache_replaced,
+            replaced=kv_cache1,
+            replace_layer_indices_zero_based=replace_layer_indices_zero_based,
+            replace_k=bool(replace_k),
+            kv_replace_mode=1,
+            target_token_index=int(pos),
+        )
+
+    return kv_cache_replaced, int(target_token_index), replaced_logits
+
+
+
+def _apply_ignore_token_mode_3(
+    *,
+    mixed_past: Any,
+    original_past: Any,
+    ignore_positions: list[int],
+    replace_layer_indices_zero_based: set[int],
+    replace_k: bool,
+) -> Any:
+    """Restore ignored token positions from original cache on top of a mixed mode3 cache."""
+    out = mixed_past
+    for pos in ignore_positions or []:
+        out = _merge_past_key_values(
+            original=out,
+            replaced=original_past,
+            replace_layer_indices_zero_based=replace_layer_indices_zero_based,
+            replace_k=bool(replace_k),
+            kv_replace_mode=1,
+            target_token_index=int(pos),
+        )
+    return out
+
+def _mix_assistant_cache_mode_1(
+    *,
+    original_past: Any,
+    replaced_past: Any,
+    replace_layer_indices_zero_based: set[int],
+    replace_k: bool,
+    target_token_index: int,
+) -> tuple[Any, Any]:
+    # Mode1: mix only target token KV at assistant step.
+    if replaced_past is None:
+        raise ValueError("mode1 requires replaced_past")
+    mixed = _merge_past_key_values(
+        original=copy.deepcopy(original_past),
+        replaced=replaced_past,
+        replace_layer_indices_zero_based=replace_layer_indices_zero_based,
+        replace_k=bool(replace_k),
+        kv_replace_mode=1,
+        target_token_index=int(target_token_index),
+    )
+    return mixed, copy.deepcopy(original_past)
+
+
+def _mix_assistant_cache_mode_2(
+    *,
+    original_past: Any,
+    replaced_past: Any,
+    replace_layer_indices_zero_based: set[int],
+    replace_k: bool,
+    target_token_index: int,
+) -> tuple[Any, Any]:
+    # Mode2 cache is already prepared before assistant boundary.
+    _ = replaced_past
+    _ = replace_layer_indices_zero_based
+    _ = bool(replace_k)
+    _ = int(target_token_index)
+    return original_past, copy.deepcopy(original_past)
+
+
+def _mix_assistant_cache_mode_3(
+    *,
+    original_past: Any,
+    replaced_past: Any,
+    replace_layer_indices_zero_based: set[int],
+    replace_k: bool,
+) -> tuple[Any, Any]:
+    # Mode3: full-layer replacement behavior at assistant step.
+    if replaced_past is None:
+        raise ValueError("mode3 requires replaced_past")
+    mixed = _merge_past_key_values(
+        original=copy.deepcopy(original_past),
+        replaced=replaced_past,
+        replace_layer_indices_zero_based=replace_layer_indices_zero_based,
+        replace_k=bool(replace_k),
+        kv_replace_mode=3,
+        target_token_index=None,
+    )
+    return mixed, copy.deepcopy(original_past)
+
+
+def _safe_decode_token(tokenizer, token_id: int) -> str:
+    try:
+        text = tokenizer.decode([int(token_id)], clean_up_tokenization_spaces=False)
+    except Exception:  # noqa: BLE001
+        text = str(int(token_id))
+    return str(text)
+
+
 def _top_logits_rows_from_tensor(
     *,
     tokenizer,
     logits: torch.Tensor,
     top_k: int = 100,
 ) -> list[dict[str, Any]]:
-    vec = logits.detach().to(dtype=torch.float32)
-    if vec.ndim == 2:
-        vec = vec[0]
-    if vec.ndim != 1:
+    if not torch.is_tensor(logits):
         return []
-    k = int(min(max(1, int(top_k)), int(vec.shape[0])))
-    top_vals, top_ids = torch.topk(vec, k=k)
-    ids = top_ids.detach().cpu().tolist()
-    vals = top_vals.detach().cpu().tolist()
-    tokens = tokenizer.convert_ids_to_tokens(ids) if tokenizer is not None else ["" for _ in ids]
-    texts = (
-        [tokenizer.decode([int(tok_id)], clean_up_tokenization_spaces=False) for tok_id in ids]
-        if tokenizer is not None
-        else ["" for _ in ids]
-    )
-    rows: list[dict[str, Any]] = []
-    for i, tok_id in enumerate(ids, start=1):
-        rows.append(
+    if logits.ndim == 2:
+        row = logits[0]
+    elif logits.ndim == 1:
+        row = logits
+    else:
+        row = logits.reshape(-1)
+    k = max(1, min(int(top_k), int(row.shape[-1])))
+    values, indices = torch.topk(row, k=k)
+    out: list[dict[str, Any]] = []
+    for i in range(k):
+        tid = int(indices[i].item())
+        tok_text = _safe_decode_token(tokenizer, tid)
+        out.append(
             {
-                "rank": int(i),
-                "token_id": int(tok_id),
-                "token": str(tokens[i - 1]),
-                "text": str(texts[i - 1]),
-                "logit": float(vals[i - 1]),
+                "token_id": tid,
+                "token": tok_text,
+                "text": tok_text,
+                "logit": float(values[i].item()),
             }
+        )
+    return out
+
+
+def _build_input_token_logits_row(
+    *,
+    tokenizer,
+    step_index: int,
+    token_id: int,
+    logits: torch.Tensor,
+    top_k: int = 15,
+) -> dict[str, Any]:
+    row_text = _safe_decode_token(tokenizer, int(token_id))
+    return {
+        "step": int(step_index),
+        "token_id": int(token_id),
+        "token": row_text,
+        "text": row_text,
+        "top_logits": _top_logits_rows_from_tensor(tokenizer=tokenizer, logits=logits, top_k=int(top_k)),
+    }
+
+
+def _rows_from_prefill_logits(
+    *,
+    tokenizer,
+    token_ids: list[int],
+    logits_3d: Any,
+    start_step: int = 0,
+    top_k: int = 15,
+) -> list[dict[str, Any]]:
+    if not torch.is_tensor(logits_3d) or logits_3d.ndim != 3:
+        return []
+    seq_len = min(int(logits_3d.shape[1]), int(len(token_ids)))
+    rows: list[dict[str, Any]] = []
+    for pos in range(seq_len):
+        rows.append(
+            _build_input_token_logits_row(
+                tokenizer=tokenizer,
+                step_index=int(start_step + pos),
+                token_id=int(token_ids[pos]),
+                logits=logits_3d[:, pos, :],
+                top_k=int(top_k),
+            )
         )
     return rows
 
@@ -433,7 +1173,10 @@ def run_study(
     target_word: str,
     replacement_word: str,
     replace_layers: str,
-    replace_k: bool = False,
+    kv_replace_mode: int = 3,
+    enable_ignore_replacement_token: bool = False,
+    ignore_replacement_token: str = "",
+    replace_k: bool = True,
     enable_layer_jump: bool = False,
     shortcut_start_layer: int = 24,
     shortcut_target_layer: int = 31,
@@ -445,9 +1188,6 @@ def run_study(
     include_assistant_marker: bool = True,
     config: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    if not include_assistant_marker:
-        raise ValueError("Attention word replacement requires include_assistant_marker=true.")
-
     target = str(target_word or "").strip()
     replacement = str(replacement_word or "").strip()
     if not target:
@@ -464,6 +1204,12 @@ def run_study(
         raise ValueError(
             f"replacement_word must be single-token, got {len(replacement_ids)} tokens: {replacement!r}, ids={replacement_ids}"
         )
+    ignore_token_text = str(ignore_replacement_token or "").strip()
+    ignore_enabled = bool(enable_ignore_replacement_token) or bool(ignore_token_text)
+    ignore_token_parts: list[str] = []
+    ignore_token_ids: list[int] = []
+    if ignore_token_text:
+        ignore_token_parts, ignore_token_ids = _parse_ignore_token_id_list(tokenizer, ignore_token_text)
 
     base_model = getattr(model, "model", None)
     layers = getattr(base_model, "layers", None)
@@ -472,6 +1218,7 @@ def run_study(
     if layers is None:
         raise ValueError("Model does not expose decoder layers.")
     layer_count = int(len(layers))
+    parsed_kv_replace_mode = _parse_kv_replace_mode(kv_replace_mode)
     replace_layer_indices_zero_based, replace_layers_zero_based = _parse_replace_layers_spec(
         str(replace_layers or ""),
         layer_count=layer_count,
@@ -500,47 +1247,82 @@ def run_study(
             f"target_word must appear exactly once in user messages, got {int(replaced_count)} occurrences: {target!r}"
         )
 
-    chat_with_prompt = tokenizer.apply_chat_template(
-        messages,
-        tokenize=True,
-        add_generation_prompt=True,
-    )
-    chat_without_prompt = tokenizer.apply_chat_template(
-        messages,
-        tokenize=True,
-        add_generation_prompt=False,
-    )
-    replaced_with_prompt = tokenizer.apply_chat_template(
-        replaced_messages,
-        tokenize=True,
-        add_generation_prompt=True,
-    )
-    replaced_without_prompt = tokenizer.apply_chat_template(
-        replaced_messages,
-        tokenize=True,
-        add_generation_prompt=False,
-    )
-    full_ids = _normalize_chat_template_ids(chat_with_prompt)
-    without_ids = _normalize_chat_template_ids(chat_without_prompt)
-    full_ids_replaced = _normalize_chat_template_ids(replaced_with_prompt)
-    without_ids_replaced = _normalize_chat_template_ids(replaced_without_prompt)
-    if not full_ids or not full_ids_replaced:
-        raise ValueError("Chat template returned empty ids.")
-    if len(without_ids) >= len(full_ids):
-        raise ValueError("Unable to locate assistant generation suffix for original prompt.")
-    if len(without_ids_replaced) >= len(full_ids_replaced):
-        raise ValueError("Unable to locate assistant generation suffix for replaced prompt.")
-
-    assistant_suffix_ids = full_ids[len(without_ids) :]
-    assistant_suffix_replaced_ids = full_ids_replaced[len(without_ids_replaced) :]
-    if assistant_suffix_ids != assistant_suffix_replaced_ids:
-        raise ValueError("Assistant suffix differs between original and replaced prompts.")
-    if not assistant_suffix_ids:
-        raise ValueError("Assistant suffix is empty.")
-
-    prefix_ids = full_ids[: len(without_ids)]
-    prefix_ids_replaced = full_ids_replaced[: len(without_ids_replaced)]
+    if bool(include_assistant_marker):
+        chat_with_prompt = tokenizer.apply_chat_template(
+            messages,
+            tokenize=True,
+            add_generation_prompt=True,
+        )
+        replaced_with_prompt = tokenizer.apply_chat_template(
+            replaced_messages,
+            tokenize=True,
+            add_generation_prompt=True,
+        )
+        full_ids = _normalize_chat_template_ids(chat_with_prompt)
+        full_ids_replaced = _normalize_chat_template_ids(replaced_with_prompt)
+        if not full_ids or not full_ids_replaced:
+            raise ValueError("Chat template returned empty ids.")
+        chat_without_prompt = tokenizer.apply_chat_template(
+            messages,
+            tokenize=True,
+            add_generation_prompt=False,
+        )
+        replaced_without_prompt = tokenizer.apply_chat_template(
+            replaced_messages,
+            tokenize=True,
+            add_generation_prompt=False,
+        )
+        without_ids = _normalize_chat_template_ids(chat_without_prompt)
+        without_ids_replaced = _normalize_chat_template_ids(replaced_without_prompt)
+        if len(without_ids) >= len(full_ids):
+            raise ValueError("Unable to locate assistant generation suffix for original prompt.")
+        if len(without_ids_replaced) >= len(full_ids_replaced):
+            raise ValueError("Unable to locate assistant generation suffix for replaced prompt.")
+        assistant_suffix_ids = full_ids[len(without_ids) :]
+        assistant_suffix_replaced_ids = full_ids_replaced[len(without_ids_replaced) :]
+        if assistant_suffix_ids != assistant_suffix_replaced_ids:
+            raise ValueError("Assistant suffix differs between original and replaced prompts.")
+        if not assistant_suffix_ids:
+            raise ValueError("Assistant suffix is empty.")
+        prefix_ids = full_ids[: len(without_ids)]
+        prefix_ids_replaced = full_ids_replaced[: len(without_ids_replaced)]
+    else:
+        # No assistant marker mode: use raw last-user text tokens only (no chat template),
+        # and treat its last token as the processing suffix.
+        last_user_text = ""
+        last_user_text_replaced = ""
+        for item in messages:
+            if str(item.get("role") or "") == "user":
+                last_user_text = str(item.get("content") or "")
+        for item in replaced_messages:
+            if str(item.get("role") or "") == "user":
+                last_user_text_replaced = str(item.get("content") or "")
+        full_ids = [int(x) for x in (tokenizer(last_user_text, add_special_tokens=False).get("input_ids") or [])]
+        full_ids_replaced = [
+            int(x) for x in (tokenizer(last_user_text_replaced, add_special_tokens=False).get("input_ids") or [])
+        ]
+        if len(full_ids) < 1 or len(full_ids_replaced) < 1:
+            raise ValueError("Last user message must contain at least one token when include_assistant_marker=false.")
+        assistant_suffix_ids = [int(full_ids[-1])]
+        assistant_suffix_replaced_ids = [int(full_ids_replaced[-1])]
+        if len(full_ids) != len(full_ids_replaced):
+            if parsed_kv_replace_mode in (1, 2):
+                raise ValueError(
+                    "kv_replace_mode 1/2 requires equal tokenized prompt length "
+                    "when include_assistant_marker=false."
+                )
+            if not bool(replace_k):
+                raise ValueError(
+                    "V-only mode requires equal prompt length when include_assistant_marker=false."
+                )
+        prefix_ids = full_ids[:-1]
+        prefix_ids_replaced = full_ids_replaced[:-1]
     if len(prefix_ids) != len(prefix_ids_replaced):
+        if parsed_kv_replace_mode in (1, 2):
+            raise ValueError(
+                "kv_replace_mode 1/2 requires equal tokenized prefix length. "
+                "Please use replacement with same tokenization length or switch to mode 3."
+            )
         if not bool(replace_k):
             raise ValueError(
                 "Replacement changed prompt token length before assistant marker. "
@@ -548,10 +1330,10 @@ def run_study(
                 "or use a replacement with the same tokenized length."
             )
 
-    assistant_token_ids = tokenizer("assistant", add_special_tokens=False).get("input_ids") or []
-    if len(assistant_token_ids) != 1:
-        raise ValueError("Unable to resolve unique assistant marker token id.")
-    assistant_token_id = int(assistant_token_ids[0])
+    if bool(include_assistant_marker):
+        assistant_token_id = int(resolve_assistant_token_id(tokenizer))
+    else:
+        assistant_token_id = int(assistant_suffix_ids[0])
 
     device = next(model.parameters()).device
     prefix_tensor = torch.tensor([prefix_ids], dtype=torch.long, device=device)
@@ -563,25 +1345,136 @@ def run_study(
             use_cache=True,
             return_dict=True,
         )
-        replaced_prefill = model(
-            input_ids=replaced_prefix_tensor,
-            use_cache=True,
-            return_dict=True,
-        )
         original_past = original_prefill.past_key_values
-        replaced_past = replaced_prefill.past_key_values
+        baseline_prompt_past = copy.deepcopy(original_past)
+        input_token_top_logits: list[dict[str, Any]] = []
+        if ignore_enabled:
+            if parsed_kv_replace_mode == 1:
+                replaced_past, target_token_index = _prepare_replaced_cache_mode_1(
+                    model=model,
+                    device=device,
+                    prefix_ids=prefix_ids,
+                    prefix_ids_replaced=prefix_ids_replaced,
+                )
+                input_token_top_logits = _rows_from_prefill_logits(
+                    tokenizer=tokenizer,
+                    token_ids=prefix_ids,
+                    logits_3d=getattr(original_prefill, "logits", None),
+                    start_step=0,
+                    top_k=15,
+                )
+            elif parsed_kv_replace_mode == 2:
+                mode2_cache, target_token_index, input_token_top_logits = _prepare_replaced_cache_ignore_mode_2(
+                    model=model,
+                    device=device,
+                    tokenizer=tokenizer,
+                    prefix_ids=prefix_ids,
+                    prefix_ids_replaced=prefix_ids_replaced,
+                    replace_layer_indices_zero_based=replace_layer_indices_zero_based,
+                    replace_k=bool(replace_k),
+                    ignore_token_ids=ignore_token_ids,
+                )
+                original_past = mode2_cache
+                replaced_past = mode2_cache
+            else:
+                replaced_past, target_token_index, replaced_prefix_logits = _prepare_replaced_cache_ignore_mode_3(
+                    model=model,
+                    device=device,
+                    tokenizer=tokenizer,
+                    prefix_ids=prefix_ids,
+                    prefix_ids_replaced=prefix_ids_replaced,
+                    replace_layer_indices_zero_based=replace_layer_indices_zero_based,
+                    replace_k=bool(replace_k),
+                    ignore_token_ids=ignore_token_ids,
+                )
+                use_replaced_logits = int(layer_count - 1) in replace_layer_indices_zero_based
+                input_token_top_logits = _rows_from_prefill_logits(
+                    tokenizer=tokenizer,
+                    token_ids=prefix_ids_replaced if use_replaced_logits else prefix_ids,
+                    logits_3d=(
+                        replaced_prefix_logits
+                        if use_replaced_logits
+                        else getattr(original_prefill, "logits", None)
+                    ),
+                    start_step=0,
+                    top_k=15,
+                )
+        else:
+            if parsed_kv_replace_mode == 1:
+                replaced_past, target_token_index = _prepare_replaced_cache_mode_1(
+                    model=model,
+                    device=device,
+                    prefix_ids=prefix_ids,
+                    prefix_ids_replaced=prefix_ids_replaced,
+                )
+                input_token_top_logits = _rows_from_prefill_logits(
+                    tokenizer=tokenizer,
+                    token_ids=prefix_ids,
+                    logits_3d=getattr(original_prefill, "logits", None),
+                    start_step=0,
+                    top_k=15,
+                )
+            elif parsed_kv_replace_mode == 2:
+                mode2_cache, target_token_index, input_token_top_logits = _prepare_replaced_cache_mode_2(
+                    model=model,
+                    device=device,
+                    tokenizer=tokenizer,
+                    prefix_ids=prefix_ids,
+                    prefix_ids_replaced=prefix_ids_replaced,
+                    replace_layer_indices_zero_based=replace_layer_indices_zero_based,
+                    replace_k=bool(replace_k),
+                )
+                original_past = mode2_cache
+                replaced_past = None
+            else:
+                replaced_past, target_token_index, replaced_prefix_logits = _prepare_replaced_cache_mode_3(
+                    model=model,
+                    replaced_prefix_tensor=replaced_prefix_tensor,
+                )
+                use_replaced_logits = int(layer_count - 1) in replace_layer_indices_zero_based
+                input_token_top_logits = _rows_from_prefill_logits(
+                    tokenizer=tokenizer,
+                    token_ids=prefix_ids_replaced if use_replaced_logits else prefix_ids,
+                    logits_3d=(
+                        replaced_prefix_logits
+                        if use_replaced_logits
+                        else getattr(original_prefill, "logits", None)
+                    ),
+                    start_step=0,
+                    top_k=15,
+                )
 
         assistant_mixed = False
         last_logits: torch.Tensor | None = None
         for token_id in assistant_suffix_ids:
             one_token = torch.tensor([[int(token_id)]], dtype=torch.long, device=device)
             if int(token_id) == assistant_token_id and not assistant_mixed:
-                mixed_past = _merge_past_key_values(
-                    original=original_past,
-                    replaced=replaced_past,
-                    replace_layer_indices_zero_based=replace_layer_indices_zero_based,
-                    replace_k=bool(replace_k),
-                )
+                if int(parsed_kv_replace_mode) != 2 and replaced_past is None:
+                    raise ValueError("Internal error: missing replaced cache before assistant merge.")
+                if int(parsed_kv_replace_mode) == 1:
+                    # mode 1 only changes assistant->target attention and restores immediately after this step.
+                    mixed_past, original_past_before_assistant = _mix_assistant_cache_mode_1(
+                        original_past=original_past,
+                        replaced_past=replaced_past,
+                        replace_layer_indices_zero_based=replace_layer_indices_zero_based,
+                        replace_k=bool(replace_k),
+                        target_token_index=int(target_token_index),
+                    )
+                elif int(parsed_kv_replace_mode) == 2:
+                    mixed_past, original_past_before_assistant = _mix_assistant_cache_mode_2(
+                        original_past=original_past,
+                        replaced_past=replaced_past,
+                        replace_layer_indices_zero_based=replace_layer_indices_zero_based,
+                        replace_k=bool(replace_k),
+                        target_token_index=int(target_token_index),
+                    )
+                else:
+                    mixed_past, original_past_before_assistant = _mix_assistant_cache_mode_3(
+                        original_past=original_past,
+                        replaced_past=replaced_past,
+                        replace_layer_indices_zero_based=replace_layer_indices_zero_based,
+                        replace_k=bool(replace_k),
+                    )
                 out = model(
                     input_ids=one_token,
                     past_key_values=mixed_past,
@@ -589,7 +1482,20 @@ def run_study(
                     return_dict=True,
                     output_hidden_states=bool(layer_jump_enabled),
                 )
-                original_past = out.past_key_values
+                if int(parsed_kv_replace_mode) == 1 and baseline_prompt_past is not None:
+                    # mode1 restores target token KV after assistant mix step.
+                    restored_past = _merge_past_key_values(
+                        original=out.past_key_values,
+                        replaced=baseline_prompt_past,
+                        replace_layer_indices_zero_based=replace_layer_indices_zero_based,
+                        replace_k=bool(replace_k),
+                        kv_replace_mode=1,
+                        target_token_index=target_token_index,
+                    )
+                    original_past = restored_past
+                else:
+                    # mode2/mode3: continue directly from current cache.
+                    original_past = out.past_key_values
                 last_logits = out.logits[:, -1, :]
                 if layer_jump_enabled:
                     last_logits = _maybe_apply_layer_shortcut_logits(
@@ -613,34 +1519,42 @@ def run_study(
                 original_past = out_original.past_key_values
                 last_logits = out_original.logits[:, -1, :]
                 if not assistant_mixed:
-                    out_replaced = model(
-                        input_ids=one_token,
-                        past_key_values=replaced_past,
-                        use_cache=True,
-                        return_dict=True,
-                    )
-                    replaced_past = out_replaced.past_key_values
+                    if parsed_kv_replace_mode == 3:
+                        out_replaced = model(
+                            input_ids=one_token,
+                            past_key_values=replaced_past,
+                            use_cache=True,
+                            return_dict=True,
+                        )
+                        replaced_past = out_replaced.past_key_values
 
         if not assistant_mixed:
-            raise ValueError("Assistant marker token not found in assistant suffix.")
+            raise ValueError("Unable to locate mix trigger token in suffix.")
         if last_logits is None:
             raise ValueError("Unable to compute next-token logits from assistant suffix.")
 
         generated: list[int] = []
         max_steps = int(max_new_tokens)
         if max_steps <= 0:
-            top_logits = _top_logits_rows_from_tensor(tokenizer=tokenizer, logits=last_logits, top_k=100)
+            top100_source = last_logits
+            top_logits = _top_logits_rows_from_tensor(tokenizer=tokenizer, logits=top100_source, top_k=100)
             return {
                 "status": "ok",
                 "assistant_message": "",
                 "generated_token_count": 0,
                 "top_logits": top_logits,
+                "input_token_top_logits": input_token_top_logits,
                 "attention_word_replacement": {
                     "enabled": True,
                     "target_word": target,
                     "replacement_word": replacement,
                     "replace_layers": str(replace_layers or ""),
                     "replace_layers_zero_based": list(replace_layers_zero_based),
+                    "kv_replace_mode": int(parsed_kv_replace_mode),
+                    "ignore_enabled": bool(ignore_enabled),
+                    "ignore_replacement_token": ignore_token_text,
+                    "ignore_replacement_tokens": [str(x) for x in ignore_token_parts],
+                    "ignore_replacement_token_ids": [int(x) for x in ignore_token_ids],
                     "replace_k": bool(replace_k),
                     "replace_mode": "kv" if bool(replace_k) else "v_only",
                     "replaced_occurrences": int(replaced_count),
@@ -688,7 +1602,8 @@ def run_study(
     text = tokenizer.decode(generated, skip_special_tokens=True, clean_up_tokenization_spaces=False).strip()
     if not text:
         text = tokenizer.decode(generated, skip_special_tokens=False, clean_up_tokenization_spaces=False).strip()
-    top_logits = _top_logits_rows_from_tensor(tokenizer=tokenizer, logits=last_logits, top_k=100)
+    top100_source = last_logits
+    top_logits = _top_logits_rows_from_tensor(tokenizer=tokenizer, logits=top100_source, top_k=100)
     assistant_target_heatmaps, heatmap_meta = _build_assistant_target_heatmaps(
         tokenizer=tokenizer,
         input_ids_with_assistant=[int(x) for x in full_ids],
@@ -700,6 +1615,7 @@ def run_study(
         "assistant_message": text,
         "generated_token_count": int(len(generated)),
         "top_logits": top_logits,
+        "input_token_top_logits": input_token_top_logits,
         "heatmaps": assistant_target_heatmaps,
         "attention_word_replacement": {
             "enabled": True,
@@ -707,6 +1623,11 @@ def run_study(
             "replacement_word": replacement,
             "replace_layers": str(replace_layers or ""),
             "replace_layers_zero_based": list(replace_layers_zero_based),
+            "kv_replace_mode": int(parsed_kv_replace_mode),
+            "ignore_enabled": bool(ignore_enabled),
+            "ignore_replacement_token": ignore_token_text,
+            "ignore_replacement_tokens": [str(x) for x in ignore_token_parts],
+            "ignore_replacement_token_ids": [int(x) for x in ignore_token_ids],
             "replace_k": bool(replace_k),
             "replace_mode": "kv" if bool(replace_k) else "v_only",
             "replaced_occurrences": int(replaced_count),
@@ -733,7 +1654,7 @@ def register_cli(subparsers: argparse._SubParsersAction, bool_parser) -> None:
     parser.add_argument(
         "--prompt-text",
         type=str,
-        default="Alice gave Bob a book.Who has the book?Please directly give the name",
+        default="Alice gave Bob a book. Who has the book? Please directly give the name",
         help="User prompt text for this one-turn chat study.",
     )
     parser.add_argument(
@@ -749,10 +1670,28 @@ def register_cli(subparsers: argparse._SubParsersAction, bool_parser) -> None:
         help="Replacement word used to build substitute cache.",
     )
     parser.add_argument(
+        "--enable-ignore-replacement-token",
+        type=bool_parser,
+        default=False,
+        help="Whether to enable ignore-replacement routing for mode 1/2/3.",
+    )
+    parser.add_argument(
+        "--ignore-replacement-token",
+        type=str,
+        default="",
+        help="Ignore token text used by ignore mode routing.",
+    )
+    parser.add_argument(
         "--replace-layers",
         type=str,
         default="0-",
         help="Layers to replace (0-based). Examples: 0- , 0-3 , 0,3",
+    )
+    parser.add_argument(
+        "--kv-replace-mode",
+        type=int,
+        default=3,
+        help="KV replacement mode: 1=only target token KV, 2=target token KV + following tokens only for layers after replace_layers, 3=full replaced prompt KV.",
     )
     parser.add_argument(
         "--replace-k",
@@ -800,7 +1739,7 @@ def register_cli(subparsers: argparse._SubParsersAction, bool_parser) -> None:
         "--include-assistant-marker",
         type=bool_parser,
         default=True,
-        help="Whether to include assistant generation marker (must be true for this study).",
+        help="Whether to include assistant generation marker; false means process/mix on the last prompt token.",
     )
 
 
@@ -830,7 +1769,10 @@ def try_execute_cli(args: argparse.Namespace, config: dict[str, Any]) -> dict[st
         messages=[{"role": "user", "content": str(args.prompt_text or "")}],
         target_word=str(args.target_word or ""),
         replacement_word=str(args.replacement_word or ""),
+        enable_ignore_replacement_token=bool(args.enable_ignore_replacement_token),
+        ignore_replacement_token=str(args.ignore_replacement_token or ""),
         replace_layers=str(args.replace_layers or ""),
+        kv_replace_mode=int(args.kv_replace_mode),
         replace_k=bool(args.replace_k),
         enable_layer_jump=bool(args.enable_layer_jump),
         shortcut_start_layer=int(args.shortcut_start_layer),
@@ -858,6 +1800,9 @@ def try_execute_cli(args: argparse.Namespace, config: dict[str, Any]) -> dict[st
     assistant_message = str(result.get("assistant_message") or "").strip()
     meta = result.get("attention_word_replacement") or {}
     top_logits = result.get("top_logits") if isinstance(result.get("top_logits"), list) else []
+    input_token_top_logits = (
+        result.get("input_token_top_logits") if isinstance(result.get("input_token_top_logits"), list) else []
+    )
     # Heatmap popup rendering is temporarily disabled by request.
     # heatmaps = result.get("heatmaps") if isinstance(result.get("heatmaps"), list) else []
     # valid_heatmaps = [
@@ -873,12 +1818,17 @@ def try_execute_cli(args: argparse.Namespace, config: dict[str, Any]) -> dict[st
     summary_text = (
         f"Prompt: {str(args.prompt_text or '')}\n"
         f"Target -> Replacement: {str(args.target_word or '')} -> {str(args.replacement_word or '')}\n"
+        f"Ignore enabled: {bool(args.enable_ignore_replacement_token) or bool(str(args.ignore_replacement_token or '').strip())}\n"
+        f"Ignore token: {str(args.ignore_replacement_token or '')}\n"
+        f"Include assistant marker: {bool(args.include_assistant_marker)}\n"
         f"Replace layers: {str(args.replace_layers or '')}\n"
+        f"KV replace mode: {int(args.kv_replace_mode)} "
+        "(1=target-only, 2=target+following(after replace layers), 3=full-replaced-prompt)\n"
         f"Replace K: {bool(args.replace_k)} ({'KV' if bool(args.replace_k) else 'V-only'})\n"
         f"Layer jump: {bool(args.enable_layer_jump)} "
         f"(start={int(args.shortcut_start_layer)}, target={int(args.shortcut_target_layer)}, 0-based)\n"
         f"Generated tokens: {int(result.get('generated_token_count') or 0)}\n"
-        f"Assistant: {assistant_message}"
+        f"{'Assistant' if bool(args.include_assistant_marker) else 'Post-last-token output'}: {assistant_message}"
     )
     # Heatmap-related summary text is also disabled while popup heatmap is disabled.
     # if not valid_heatmaps:
@@ -893,6 +1843,8 @@ def try_execute_cli(args: argparse.Namespace, config: dict[str, Any]) -> dict[st
     if top_logits:
         ui_tasks.append({"name": "render_logits", "value_key": "top_logits"})
     ui_tasks.append({"name": "render_text_output", "value_key": "summary_text"})
+    if input_token_top_logits:
+        ui_tasks.append({"name": "render_input_token_logits_table", "value_key": "input_token_top_logits"})
     return {
         "hidden_state_heatmap": {
             "ok": True,
@@ -902,6 +1854,7 @@ def try_execute_cli(args: argparse.Namespace, config: dict[str, Any]) -> dict[st
             "generated_token_count": int(result.get("generated_token_count") or 0),
             "attention_word_replacement": meta,
             "top_logits": top_logits,
+            "input_token_top_logits": input_token_top_logits,
             "heatmaps": valid_heatmaps,
             "summary_text": summary_text,
             "ui_tasks": ui_tasks,

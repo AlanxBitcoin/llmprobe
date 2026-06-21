@@ -200,6 +200,21 @@ def get_ui_action(action_id: str) -> UIAction:
         raise ValueError(f"Unknown UI action: {action_id}") from exc
 
 
+def _coerce_bool(value: Any, *, default: bool) -> bool:
+    if value is None:
+        return bool(default)
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    s = str(value).strip().lower()
+    if s in {"true", "1", "yes", "on"}:
+        return True
+    if s in {"false", "0", "no", "off", ""}:
+        return False
+    return bool(default)
+
+
 def build_command_args(action: UIAction, params: dict[str, Any]) -> list[str]:
     if action.command == "run-single-word":
         return [action.command, str(params.get("word") or "apple")]
@@ -249,15 +264,17 @@ def build_command_args(action: UIAction, params: dict[str, Any]) -> list[str]:
         ]
     if action.command == "run-chat-attention-word-replacement":
         include_assistant_marker = params.get("include_assistant_marker")
-        include_assistant_marker_flag = (
-            bool(include_assistant_marker) if include_assistant_marker is not None else True
-        )
+        include_assistant_marker_flag = _coerce_bool(include_assistant_marker, default=True)
         enable_layer_jump = params.get("enable_layer_jump")
-        enable_layer_jump_flag = bool(enable_layer_jump) if enable_layer_jump is not None else False
+        enable_layer_jump_flag = _coerce_bool(enable_layer_jump, default=False)
         shortcut_start_layer = params.get("shortcut_start_layer")
         shortcut_target_layer = params.get("shortcut_target_layer")
+        kv_replace_mode = params.get("kv_replace_mode")
         replace_k = params.get("replace_k")
-        replace_k_flag = bool(replace_k) if replace_k is not None else True
+        replace_k_flag = _coerce_bool(replace_k, default=True)
+        enable_ignore_replacement_token = params.get("enable_ignore_replacement_token")
+        enable_ignore_replacement_token_flag = _coerce_bool(enable_ignore_replacement_token, default=False)
+        ignore_replacement_token = params.get("ignore_replacement_token")
         replace_layers = params.get("replace_layers")
         max_new_tokens = params.get("max_new_tokens")
         temperature = params.get("temperature")
@@ -270,8 +287,14 @@ def build_command_args(action: UIAction, params: dict[str, Any]) -> list[str]:
             str(params.get("target_word") or "Bob"),
             "--replacement-word",
             str(params.get("replacement_word") or "Bill"),
+            "--enable-ignore-replacement-token",
+            "true" if enable_ignore_replacement_token_flag else "false",
+            "--ignore-replacement-token",
+            (str(ignore_replacement_token or "") if enable_ignore_replacement_token_flag else ""),
             "--replace-layers",
             str("0-" if replace_layers is None else replace_layers),
+            "--kv-replace-mode",
+            str("3" if kv_replace_mode is None else kv_replace_mode),
             "--replace-k",
             "true" if replace_k_flag else "false",
             "--enable-layer-jump",

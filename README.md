@@ -13,6 +13,7 @@ Single entrypoint:
 - Perform neuron and layer intervention experiments.
 - Reuse token hidden-state cache for faster repeated experiments.
 - Execute studies from CLI or from the local Web UI.
+- Keep the study system modular so new studies can be added continuously.
 
 ## Requirements
 
@@ -95,7 +96,27 @@ Build token hidden-store cache:
 python src/main.py --config configs/custom.yaml build-token-hidden-store --bos true --assistant false --limit 0 --start-token-id 0
 ```
 
-## Command Overview (Current)
+## Study Inventory (Current)
+
+The following are the currently registered `study` commands from `src/study/cli.py`:
+
+- `run-single-word-hidden-state`
+- `run-single-word-hidden-state-batch-average`
+- `run-sentence-next-word`
+- `run-token-diff`
+- `run-one-on-one-attention`
+- `run-chat-attention-word-replacement`
+- `run-qk-params`
+- `run-single-word-top-100-neurons`
+- `run-layer-neuron-logits-table`
+- `run-layer-ffn-neuron-logits-table`
+- `run-layer-neurons`
+- `run-layer-shortcut`
+- `run-attribute-group-neurons`
+
+This list is not fixed. New studies will be added over time as research needs evolve.
+
+## Other CLI Commands (Current)
 
 Batch and global analysis:
 
@@ -149,6 +170,25 @@ Cache build:
   - `hidden_states.<protocol>.done.bin`
 
 The `data/` directory is intended for generated runtime artifacts and is usually ignored by git.
+
+## Screenshots
+
+Recommended location:
+
+- `docs/images/`
+
+Example:
+
+```md
+![UI Home](docs/images/ui-home.png)
+![Study Result](docs/images/study-result.png)
+```
+
+Tips:
+
+- Keep image names lowercase with hyphens, for example `ui-home.png`.
+- Prefer PNG for charts/plots and JPEG for large photos.
+- If a screenshot is very large, compress before commit to keep repo size manageable.
 
 ## Source Layout
 

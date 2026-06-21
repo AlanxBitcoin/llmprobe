@@ -198,13 +198,29 @@ function renderForm(fields, initialParams = null) {
     const label = document.createElement("label");
     label.textContent = field.label || field.name;
     wrap.appendChild(label);
-    if (field.type === "display") {
-      const display = document.createElement("div");
-      display.className = "display-field";
-      display.textContent = field.default || "";
-      wrap.appendChild(display);
-    } else {
-      const input = document.createElement("input");
+      if (field.type === "display") {
+        const display = document.createElement("div");
+        display.className = "display-field";
+        display.textContent = field.default || "";
+        wrap.appendChild(display);
+      } else if (field.type === "select") {
+        const sel = document.createElement("select");
+        sel.name = field.name;
+        const opts = Array.isArray(field.options) ? field.options : [];
+        opts.forEach((opt) => {
+          const option = document.createElement("option");
+          option.value = String((opt && opt.value) ?? "");
+          option.textContent = String((opt && opt.label) ?? option.value);
+          sel.appendChild(option);
+        });
+        const hasCached = initialParams && Object.prototype.hasOwnProperty.call(initialParams, field.name);
+        const initialValue = hasCached ? String(initialParams[field.name] ?? "") : String(field.default ?? "");
+        if (initialValue) sel.value = initialValue;
+        if (field.required) sel.required = true;
+        sel.addEventListener("change", updateCommandPreview);
+        wrap.appendChild(sel);
+      } else {
+        const input = document.createElement("input");
       if ((field.type || "text") === "textarea") {
         const area = document.createElement("textarea");
         area.name = field.name;
@@ -236,6 +252,7 @@ function renderForm(fields, initialParams = null) {
   updateBosAssistantVisibility();
   updatePrefixContextVisibility();
   updateAwrLayerJumpVisibility();
+  updateAwrIgnoreTokenVisibility();
   updateBatchNameDropdown();
   updateLayerNeuronsListPicker();
   updateAttributeGroupsPicker();
@@ -268,6 +285,7 @@ function updateCommandPreview() {
   updateBosAssistantVisibility();
   updatePrefixContextVisibility();
   updateAwrLayerJumpVisibility();
+  updateAwrIgnoreTokenVisibility();
   updateBatchNameDropdownVisibility();
   updateLayerNeuronsListPickerVisibility();
   updateAttributeGroupsPickerVisibility();
@@ -520,6 +538,16 @@ function updateAwrLayerJumpVisibility() {
   const enabled = Boolean(enableInput.checked);
   startWrap.style.display = enabled ? "" : "none";
   targetWrap.style.display = enabled ? "" : "none";
+}
+
+function updateAwrIgnoreTokenVisibility() {
+  const enableInput = paramsForm.elements.namedItem("enable_ignore_replacement_token");
+  const tokenInput = paramsForm.elements.namedItem("ignore_replacement_token");
+  if (!enableInput || !tokenInput) return;
+  const tokenWrap = tokenInput.closest(".field");
+  if (!tokenWrap) return;
+  const enabled = Boolean(enableInput.checked);
+  tokenWrap.style.display = enabled ? "" : "none";
 }
 
 function extractLayerNeuronListNames(raw) {
