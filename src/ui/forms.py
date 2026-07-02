@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 # Design requirements (moved from PROJECT_DESIGN.md):
 # - Central schema list for UI parameter forms.
@@ -56,7 +56,7 @@ FORM_SCHEMAS: dict[str, list[dict[str, Any]]] = {
             "rows": 6,
         },
         {"name": "target_word", "label": "Target Word", "type": "text", "default": "Bob", "required": True},
-        {"name": "replacement_word", "label": "Replacement Word", "type": "text", "default": "Bill", "required": True},
+        {"name": "replacement_word", "label": "Replacement Word (empty => zero state)", "type": "text", "default": "Bill", "required": False},
         {
             "name": "enable_ignore_replacement_token",
             "label": "Enable Ignore Replacement Token",
@@ -65,14 +65,14 @@ FORM_SCHEMAS: dict[str, list[dict[str, Any]]] = {
         },
         {
             "name": "ignore_replacement_token",
-            "label": "Ignore Replacement Token",
+            "label": "Ignore Replacement Token (#tokenId supported)",
             "type": "text",
             "default": "",
             "required": False,
             "hidden": True,
         },
         {"name": "replace_layers", "label": "Replace Layers (0-based)", "type": "text", "default": "0-", "required": True},
-        {"name": "replace_k", "label": "Replace K (KV mode)", "type": "checkbox", "default": True, "hidden": True},
+        {"name": "replace_k", "label": "Replace K (KV mode)", "type": "checkbox", "default": True},
         {
             "name": "kv_replace_mode",
             "label": "KV Replace Mode",
@@ -85,7 +85,7 @@ FORM_SCHEMAS: dict[str, list[dict[str, Any]]] = {
             ],
             "required": True,
         },
-        {"name": "enable_layer_jump", "label": "Enable Layer Jump", "type": "checkbox", "default": False},
+        {"name": "enable_layer_shortcut", "label": "Enable Layer Shortcut", "type": "checkbox", "default": False},
         {"name": "shortcut_start_layer", "label": "Shortcut Start Layer (0-based)", "type": "number", "default": 24, "min": 0, "step": 1},
         {"name": "shortcut_target_layer", "label": "Shortcut Target Layer (0-based)", "type": "number", "default": 31, "min": 0, "step": 1},
         {"name": "max_new_tokens", "label": "Max New Tokens", "type": "number", "default": 64, "min": 1, "step": 1},
@@ -94,9 +94,9 @@ FORM_SCHEMAS: dict[str, list[dict[str, Any]]] = {
         {"name": "include_assistant_marker", "label": "Include Assistant Marker", "type": "checkbox", "default": True},
     ],
     "qk_params_form": [
-        {"name": "view_by_layer", "label": "按层看 (Layer x Dim)", "type": "checkbox", "default": True},
-        {"name": "view_by_head", "label": "按头看 (Layer x Head)", "type": "checkbox", "default": False},
-        {"name": "selected_layer", "label": "层号 (1-based)", "type": "number", "default": 1, "min": 1, "step": 1},
+        {"name": "view_by_layer", "label": "鎸夊眰鐪?(Layer x Dim)", "type": "checkbox", "default": True},
+        {"name": "view_by_head", "label": "鎸夊ご鐪?(Layer x Head)", "type": "checkbox", "default": False},
+        {"name": "selected_layer", "label": "灞傚彿 (1-based)", "type": "number", "default": 1, "min": 1, "step": 1},
     ],
     "single_word_top_100_neurons_form": [
         {"name": "word", "label": "Word", "type": "text", "default": "apple", "required": True},
@@ -195,3 +195,5 @@ FORM_SCHEMAS: dict[str, list[dict[str, Any]]] = {
 
 def get_form_schema(schema_id: str) -> list[dict[str, Any]]:
     return FORM_SCHEMAS.get(schema_id, [])
+
+

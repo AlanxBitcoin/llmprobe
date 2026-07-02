@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 # Design requirements (moved from PROJECT_DESIGN.md):
 # - Registry defines available Study/Probe actions for UI buttons.
@@ -265,8 +265,8 @@ def build_command_args(action: UIAction, params: dict[str, Any]) -> list[str]:
     if action.command == "run-chat-attention-word-replacement":
         include_assistant_marker = params.get("include_assistant_marker")
         include_assistant_marker_flag = _coerce_bool(include_assistant_marker, default=True)
-        enable_layer_jump = params.get("enable_layer_jump")
-        enable_layer_jump_flag = _coerce_bool(enable_layer_jump, default=False)
+        enable_layer_shortcut = params.get("enable_layer_shortcut")
+        enable_layer_shortcut_flag = _coerce_bool(enable_layer_shortcut, default=False)
         shortcut_start_layer = params.get("shortcut_start_layer")
         shortcut_target_layer = params.get("shortcut_target_layer")
         kv_replace_mode = params.get("kv_replace_mode")
@@ -286,7 +286,7 @@ def build_command_args(action: UIAction, params: dict[str, Any]) -> list[str]:
             "--target-word",
             str(params.get("target_word") or "Bob"),
             "--replacement-word",
-            str(params.get("replacement_word") or "Bill"),
+            str("Bill" if params.get("replacement_word") is None else params.get("replacement_word")),
             "--enable-ignore-replacement-token",
             "true" if enable_ignore_replacement_token_flag else "false",
             "--ignore-replacement-token",
@@ -297,8 +297,8 @@ def build_command_args(action: UIAction, params: dict[str, Any]) -> list[str]:
             str("3" if kv_replace_mode is None else kv_replace_mode),
             "--replace-k",
             "true" if replace_k_flag else "false",
-            "--enable-layer-jump",
-            "true" if enable_layer_jump_flag else "false",
+            "--enable-layer-shortcut",
+            "true" if enable_layer_shortcut_flag else "false",
             "--shortcut-start-layer",
             str(24 if shortcut_start_layer is None else shortcut_start_layer),
             "--shortcut-target-layer",
@@ -452,3 +452,9 @@ def build_command_args(action: UIAction, params: dict[str, Any]) -> list[str]:
             str(params.get("filter_json") or ""),
         ]
     return [action.command]
+
+
+
+
+
+
